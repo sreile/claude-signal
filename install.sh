@@ -58,22 +58,51 @@ fi
 if [ "$orgb_up_to_date" = 1 ]; then
   echo "OpenRGB bereit (gepinnt $ORGB_VERSION): $ORGB_EXE"
 else
-  mkdir -p "$WIN_DIR/tools"
-  rm -rf "$ORGB_DIR"   # alten Nightly-/Vorgänger-Build restlos entfernen
-  mkdir -p "$ORGB_DIR"
+  # C2: NIE die alte, funktionierende Installation vor der Verifikation der
+  # neuen löschen. Erst nach ".new" laden/entpacken/prüfen, dann tauschen —
+  # ein rm -rf auf eine laufende .exe kann fehlschlagen und würde mit set -e
+  # den ganzen Installer mitten im Umbau abbrechen (kaputter Zwischenzustand,
+  # gar kein OpenRGB mehr vorhanden).
+  ORGB_DIR_NEW="${ORGB_DIR}.new"
+  ORGB_EXE_NEW="$ORGB_DIR_NEW/OpenRGB Windows 64-bit/OpenRGB.exe"
+  rm -rf "$ORGB_DIR_NEW"
+  mkdir -p "$WIN_DIR/tools" "$ORGB_DIR_NEW"
+
   if curl -sL -o "$WIN_DIR/tools/openrgb.zip" "$ORGB_URL" \
      && python3 -c '
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as z:
     z.extractall(sys.argv[2])
-' "$WIN_DIR/tools/openrgb.zip" "$ORGB_DIR" \
-     && [ -f "$ORGB_EXE" ]; then
+' "$WIN_DIR/tools/openrgb.zip" "$ORGB_DIR_NEW" \
+     && [ -f "$ORGB_EXE_NEW" ]; then
+    # Neue Version verifiziert vorhanden -- jetzt erst der eigentliche Tausch.
+    ORGB_DIR_OLD="${ORGB_DIR}.old"
+    rm -rf "$ORGB_DIR_OLD"
+    [ -d "$ORGB_DIR" ] && mv "$ORGB_DIR" "$ORGB_DIR_OLD"
+    mv "$ORGB_DIR_NEW" "$ORGB_DIR"
     echo "$ORGB_VERSION" > "$ORGB_VERSION_FILE"
     echo "OpenRGB bereit (gepinnt $ORGB_VERSION): $ORGB_EXE"
+    # Alte Version aufräumen -- ein Fehlschlag hier (z. B. weil eine laufende
+    # .exe aus diesem Ordner die Datei sperrt) ist NICHT fatal, siehe I8 unten.
+    rm -rf "$ORGB_DIR_OLD" 2>/dev/null || true
   else
     echo "WARNUNG: OpenRGB konnte nicht heruntergeladen/entpackt werden — Geräte-Kopplung bleibt inaktiv, der Rest der Installation läuft normal weiter."
+    rm -rf "$ORGB_DIR_NEW"
   fi
   rm -f "$WIN_DIR/tools/openrgb.zip"
+fi
+
+# I8: Läuft OpenRGB noch von einem anderen/alten Binärpfad (z. B. weil der
+# Tausch gerade eben passiert ist), wirkt der Pin erst nach einem Neustart —
+# der Installer beendet den Prozess NICHT selbst.
+ORGB_RUNNING_PATH="$("$PSEXE" -NoProfile -Command \
+  "(Get-Process -Name OpenRGB -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path)" \
+  | tr -d '\r')"
+if [ -n "$ORGB_RUNNING_PATH" ]; then
+  ORGB_RUNNING_PATH_WSL="$(wslpath -u "$ORGB_RUNNING_PATH" 2>/dev/null || echo "")"
+  if [ -n "$ORGB_RUNNING_PATH_WSL" ] && [ "$ORGB_RUNNING_PATH_WSL" != "$ORGB_EXE" ]; then
+    echo "HINWEIS: OpenRGB läuft noch von einem anderen Pfad ($ORGB_RUNNING_PATH) — für die gepinnte Version einmal manuell neu starten (Stop-Process -Name OpenRGB; das Overlay startet den Server danach automatisch neu)."
+  fi
 fi
 
 # SignalAnimator kompilieren (C#, SDK-Streaming über OpenRGB Port 6742).
@@ -81,19 +110,27 @@ fi
 CSC="/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
 [ -f "$CSC" ] || CSC="/mnt/c/Windows/Microsoft.NET/Framework/v4.0.30319/csc.exe"
 if [ -f "$CSC" ]; then
+  # I7: VOR dem Kompilieren prüfen, ob eine alte Instanz noch läuft — die
+  # sperrt die .exe-Datei unter Windows, was den Build sonst mit einer
+  # verwirrenden Fehlermeldung scheitern lässt.
+  ANIM_RUNNING="$("$PSEXE" -NoProfile -Command \
+    "if (Get-Process -Name SignalAnimator -ErrorAction SilentlyContinue) { Write-Output yes } else { Write-Output no }" \
+    | tr -d '\r')"
+
   cp "$SRC/SignalAnimator.cs" "$WIN_DIR/"
   if ( cd /mnt/c && "$CSC" /nologo /target:winexe \
          /out:"$(wslpath -w "$WIN_DIR/SignalAnimator.exe")" \
          "$(wslpath -w "$WIN_DIR/SignalAnimator.cs")" ); then
     echo "Animator kompiliert: $WIN_DIR/SignalAnimator.exe"
-    ANIM_RUNNING="$("$PSEXE" -NoProfile -Command \
-      "if (Get-Process -Name SignalAnimator -ErrorAction SilentlyContinue) { Write-Output yes } else { Write-Output no }" \
-      | tr -d '\r')"
     if [ "$ANIM_RUNNING" = "yes" ]; then
       echo "HINWEIS: SignalAnimator läuft noch mit der vorherigen Version — für die neue Datei einmal manuell neu starten (Stop-Process -Name SignalAnimator; das Overlay startet ihn danach automatisch neu)."
     fi
   else
-    echo "WARNUNG: SignalAnimator-Kompilierung fehlgeschlagen — Animationen deaktiviert (nur Overlay-Punkt)."
+    if [ "$ANIM_RUNNING" = "yes" ]; then
+      echo "WARNUNG: SignalAnimator-Kompilierung fehlgeschlagen — vermutlich sperrt die laufende Instanz die Datei. Einmal beenden (Stop-Process -Name SignalAnimator) und install.sh erneut ausführen."
+    else
+      echo "WARNUNG: SignalAnimator-Kompilierung fehlgeschlagen — Animationen deaktiviert (nur Overlay-Punkt)."
+    fi
   fi
 else
   echo "WARNUNG: csc.exe nicht gefunden — Animationen deaktiviert (nur Overlay-Punkt)."

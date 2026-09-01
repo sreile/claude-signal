@@ -29,15 +29,20 @@ Beim Absenden einer Antwort springt die Anzeige sofort auf „arbeitet"
 
 ### RGB-Geräte (via OpenRGB)
 
-Ein kleiner, dauerhaft laufender Hintergrunddienst — `SignalAnimator.exe`
-(C#, von `install.sh` mit dem in jedem .NET Framework mitgelieferten `csc.exe`
-kompiliert, keine zusätzliche Abhängigkeit) — verbindet sich mit
+Ein kleiner Hintergrunddienst — `SignalAnimator.exe` (C#, von `install.sh`
+mit dem in jedem .NET Framework mitgelieferten `csc.exe` kompiliert, keine
+zusätzliche Abhängigkeit) — verbindet sich mit
 [OpenRGBs](https://openrgb.org/) SDK-Server (Port 6742) und **streamt echte
-Wellen-/Puls-Animationen direkt auf die einzelnen LEDs**, 20 Bilder pro
-Sekunde. Das Overlay selbst spricht OpenRGB nicht mehr direkt an — es
-schreibt nur den aktuellen Zustand nach `state.txt`, den der Animator
-mehrmals pro Sekunde ausliest. Ein Zustandswechsel zeigt sich dadurch
-innerhalb von unter 100 ms auf den Geräten.
+Wellen-/Puls-Animationen direkt auf die einzelnen LEDs**, bis zu 20 Bilder
+pro Sekunde. Das Overlay selbst spricht OpenRGB nicht mehr direkt an — es
+schreibt nur den aktuellen Zustand nach `state.txt`, den der Animator bei
+jedem Bild neu ausliest. Ein Zustandswechsel zeigt sich dadurch nach
+höchstens ~0,6 s auf den Geräten (der 500-ms-Poll-Takt des Overlays plus
+ein Animator-Bild). Für jedes Bild öffnet der Animator eine eigene, kurz
+lebende Verbindung zum OpenRGB-Server statt eine dauerhafte offen zu
+halten (siehe Architektur unten) — und überspringt unveränderte Bilder
+(ruhende Zustände wie „keine Session"/„fertig" senden dadurch nur etwa
+1×/Sekunde als Lebenszeichen, statt bei jedem Bild neu).
 
 | Zustand | Optik |
 |---|---|
@@ -66,10 +71,16 @@ mitanimieren zu lassen (Lüfter, AIO-Kühler, RAM-Module, …), lege eine
 `config.json` im Deploy-Ordner an
 (`<LOCALAPPDATA>\ClaudeSignal\config.json`, Inhalt `{"AllRgbDevices": true}`)
 — beim nächsten Verschieben des Punkts schreibt das Overlay diese Einstellung
-zusammen mit der Position automatisch fort; der Animator liest `config.json`
-selbst bei jedem (Neu-)Verbinden. Hinweis: Mainboard-/RAM-RGB über OpenRGB
-braucht meist zusätzlich den PawnIO-Treiber und einmalig Admin-Rechte bei der
-Ersteinrichtung; USB-Lüfter-Hubs in der Regel nicht.
+zusammen mit der Position automatisch fort. **Wichtig:** Der Animator liest
+`config.json` nur einmal beim eigenen Start — nach dem Anlegen/Ändern der
+Datei einmal `Stop-Process -Name SignalAnimator` ausführen, damit er mit der
+neuen Einstellung neu startet (die Tick-Überwachung im Overlay holt ihn
+danach automatisch zurück). Hinweis: Mainboard-/RAM-RGB über OpenRGB braucht
+meist zusätzlich den PawnIO-Treiber und einmalig Admin-Rechte bei der
+Ersteinrichtung; USB-Lüfter-Hubs in der Regel nicht. Je mehr Geräte
+gleichzeitig animiert werden, desto niedriger die Bildrate pro Gerät (die
+Gesamtrate ist gedeckelt, siehe Architektur unten) — bei sehr vielen Geräten
+wirkt das Bild dadurch spürbar ruckeliger.
 
 **SignalRGB: nicht mehr benötigt.** Frühere Versionen nutzten SignalRGB samt
 Deep-Links bzw. einem selbst-pollenden Effekt — beides erwies sich als
@@ -92,14 +103,22 @@ in `signal.env` neben den Skripten; `report-status.sh` liest diese Datei bei
 jedem Aufruf. `ClaudeSignal.ps1` (WPF, Polling alle 500 ms) liest die
 Statusdateien, aggregiert sie nach der Prioritätsregel oben, färbt den Punkt —
 und schreibt den aggregierten Zustand zusätzlich in `state.txt` (Format
-`<zustand> <epochMs>`, atomar per tmp+rename). `SignalAnimator.exe` (C#,
-eigener Hintergrundprozess, von `ClaudeSignal.ps1` beim Start mitgestartet)
-liest `state.txt` alle ~200 ms, hält dafür eine eigene Verbindung zu OpenRGBs
-SDK-Server offen und streamt 20 Bilder pro Sekunde direkt auf die LEDs —
-kein Effektwechsel, kein Deep-Link, kein Fenster. Die frühere
-SignalRGB-Lösung sowie das kurzlebige v4/v4.1-Modell mit
-Kommandozeilenaufrufen sind komplett ersetzt (siehe Update 8–10 im
-Spec-Dokument).
+`<zustand> <epochMs>`, atomar per tmp+rename). Alle ~10 s prüft das Overlay
+außerdem, ob der OpenRGB-Server und `SignalAnimator.exe` noch laufen, und
+startet sie bei Bedarf neu (Absturz-/Über-Nacht-Schutz). `SignalAnimator.exe`
+(C#, eigener Hintergrundprozess) liest `state.txt` bei jedem Bild neu (bis zu
+20×/Sekunde, je nach Zahl der angesteuerten Geräte) und rendert direkt auf
+die LEDs. Für jedes gesendete Bild öffnet er eine frische, kurzlebige
+TCP-Verbindung zu OpenRGBs SDK-Server statt eine dauerhafte offen zu halten
+(eine dauerhafte Verbindung schließt der Server nach 1–2 Paketen sauber
+wieder) und überspringt dabei unveränderte Bilder (nur ~1×/s Lebenszeichen
+im Ruhezustand) — das hält die Verbindungsrate niedrig, auch bei vielen
+Geräten gleichzeitig. Bleibt der Zustand 10 Minuten durchgehend „keine
+Session", beendet sich der Animator von selbst (die Tick-Überwachung des
+Overlays startet ihn bei Bedarf neu) — kein Fenster, kein Effektwechsel,
+kein Deep-Link. Die frühere SignalRGB-Lösung sowie das kurzlebige
+v4/v4.1-Modell mit Kommandozeilenaufrufen sind komplett ersetzt (siehe
+Update 8–11 im Spec-Dokument).
 
 ```
 Claude Code Hooks (WSL)                Windows
@@ -111,15 +130,20 @@ Claude Code Hooks (WSL)                Windows
 └──────────────────────┘              ┌──────────────▼──────────────┐
                                       │ ClaudeSignal.ps1 (WPF)      │
                                       │ aggregiert → färbt Punkt    │
+                                      │ (prüft alle ~10 s: laufen   │
+                                      │  Server + Animator noch?)   │
                                       └──────────────┬──────────────┘
                                         schreibt bei jedem Tick
                                       ┌──────────────▼──────────────┐
                                       │ state.txt (<Zustand> <ms>)  │
                                       └──────────────┬──────────────┘
-                                        liest alle ~200 ms
+                                        liest bei jedem Bild neu
                                       ┌──────────────▼──────────────┐
                                       │ SignalAnimator.exe (C#)     │
-                                      │ rendert Welle/Puls, 20 FPS  │
+                                      │ rendert Welle/Puls,         │
+                                      │ ≤ 20 FPS (je nach Geräten), │
+                                      │ 1 kurze Verbindung/Bild,    │
+                                      │ überspringt unveränderte    │
                                       └──────────────┬──────────────┘
                                         SDK-Streaming, Port 6742
                                       ┌──────────────▼──────────────┐
@@ -143,14 +167,18 @@ Dokumente-Verzeichnis (per PowerShell + `wslpath`) und hinterlegt sie in
 Bedarf ein Backup von `~/.claude/settings.json` an, trägt fehlende Hooks nach
 (und entfernt dabei veraltete Hook-Einträge, die noch auf einen älteren
 Installationsort zeigen), deployt das Overlay, lädt bei Bedarf die gepinnte
-stabile OpenRGB-Version 1.0rc3.1 automatisch herunter (entpackt nach
-`<LOCALAPPDATA>\ClaudeSignal\tools\OpenRGB\`; ersetzt dabei automatisch eine
-ältere/andere installierte Version; schlägt der Download fehl, ist das nicht
-fatal — die Installation läuft durch, nur die Geräte-Kopplung bleibt dann
-inaktiv) und kompiliert `SignalAnimator.exe` neu aus `SignalAnimator.cs`
-(mit dem in jedem .NET Framework mitgelieferten `csc.exe` — keine
-zusätzliche Abhängigkeit). Räumt außerdem alle Effektdateien früherer
-Versionen aus `Documents\WhirlwindFX\Effects` auf, falls noch vorhanden.
+stabile OpenRGB-Version 1.0rc3.1 automatisch herunter und kompiliert
+`SignalAnimator.exe` neu aus `SignalAnimator.cs` (mit dem in jedem .NET
+Framework mitgelieferten `csc.exe` — keine zusätzliche Abhängigkeit). Der
+OpenRGB-Download wird sicher getauscht: erst komplett in einen separaten
+Ordner herunterladen und entpacken, dort verifizieren, **erst dann** die
+alte Installation ersetzen — schlägt der Download fehl oder bricht ab,
+bleibt die bisherige (funktionierende) Installation unangetastet unter
+`<LOCALAPPDATA>\ClaudeSignal\tools\OpenRGB\` stehen; nicht fatal, die
+Geräte-Kopplung bleibt in dem Fall einfach inaktiv, der Rest der
+Installation läuft normal durch. Räumt außerdem alle Effektdateien
+früherer Versionen aus `Documents\WhirlwindFX\Effects` auf, falls noch
+vorhanden.
 
 **Voraussetzung:** `python3` muss in WSL installiert sein — `install.sh`
 prüft das und bricht sonst mit Fehlermeldung ab.
@@ -249,12 +277,16 @@ unabhängig weiter.
   Falls nicht: `install.sh` erneut ausführen (lädt OpenRGB nach) oder es
   manuell von https://openrgb.org besorgen und dorthin entpacken.
 - Läuft der Prozess `OpenRGB` (Taskmanager)? Er startet automatisch mit der
-  nächsten neuen Claude-Session — bei Bedarf eine neue Session öffnen.
-- Läuft der Prozess `SignalAnimator`? Ebenfalls automatischer Start mit der
-  nächsten neuen Session.
+  nächsten neuen Claude-Session — bei Bedarf eine neue Session öffnen; das
+  Overlay prüft außerdem alle ~10 s selbst nach und startet ihn bei Bedarf
+  neu, ohne auf eine neue Session zu warten.
+- Läuft der Prozess `SignalAnimator`? Genauso automatischer (Neu-)Start —
+  er beendet sich zudem bewusst nach 10 Minuten durchgehendem Leerlauf
+  (keine Session) und wird bei Bedarf vom Overlay wieder hochgefahren.
 - **`<LOCALAPPDATA>\ClaudeSignal\animator.log`** ist die erste Anlaufstelle:
   zeigt Verbindungsstatus, erkannte Geräte samt LED-Zahl, Zustandswechsel und
-  Fehler (auf die letzten ~80 Zeilen begrenzt).
+  Fehler (überlebt einen Neustart des Animators, auf die letzten ~200 Zeilen
+  begrenzt).
 - Läuft SignalRGB oder Swarm II noch parallel? Beenden — beide kämpfen mit
   OpenRGB um dieselben Geräte.
 
@@ -323,8 +355,16 @@ der Aggregation ignoriert (gelten als stale). Statusdateien, die älter als
   Tastatur-Profil (4 statt 1) sowie an einem Absturz-Bug im Nightly-Build
   (siehe Update 10 im Spec-Dokument) — nicht an OpenRGB selbst; die gepinnte
   stabile Version 1.0rc3.1 umgeht beides.
-- Der SDK-Streaming-Kanal öffnet für jedes einzelne LED-Update-Paket eine
+- Der SDK-Streaming-Kanal öffnet für jedes Bild pro angesteuertem Gerät eine
   kurzlebige, frische TCP-Verbindung statt einer dauerhaften — eine
   dauerhafte Verbindung wird von OpenRGB nach 1–2 Paketen sauber
   geschlossen (kein Absturz, aber kein Streaming). Der Verbindungsaufbau
-  über Loopback dauert unter 1 ms, das reicht für 20 FPS mit großem Puffer.
+  über Loopback dauert unter 1 ms. Bei sehr vielen Geräten gleichzeitig
+  (z. B. `AllRgbDevices` mit vielen Zonen) wird die Bildrate pro Gerät
+  automatisch gedrosselt, damit die Gesamt-Verbindungsrate 40/Sekunde nicht
+  übersteigt (Port-Erschöpfung vorbeugen) — unveränderte Bilder werden
+  zusätzlich übersprungen (nur ~1×/s Lebenszeichen im Ruhezustand).
+- `SignalAnimator.exe` beendet sich nach 10 Minuten durchgehendem Leerlauf
+  selbst (Ressourcen sparen) und wird vom Overlay bei Bedarf automatisch neu
+  gestartet (spätestens nach ~10 s) — kurzzeitig läuft dadurch keine
+  Geräte-Kopplung, das ist beabsichtigt und unkritisch.

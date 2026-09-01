@@ -323,3 +323,74 @@ ersetzt automatisch eine ältere/andere Installation dort) und kompiliert
 (keine neue Abhängigkeit; nicht fatal, falls `csc.exe` fehlt). Die
 `state.txt`-Bereinigung aus Update 8 entfällt — die Datei ist wieder ein
 aktiv genutzter Kommunikationskanal, kein Altlast mehr.
+
+**Update 11 (2026-09-01):** v5.1-Härtung nach unabhängiger Review, empirisch
+verifiziert.
+
+*Kritisch:*
+- **Port-Erschöpfungsrisiko bei `AllRgbDevices`** (viele Zonen × 20 FPS
+  hätte >136 Verbindungen/s erzeugen können — Risiko für systemweite
+  Ephemeral-Port-Erschöpfung). Fix, alle drei zusammen: (a) Umstieg von
+  Paket 1051 (`UPDATEZONELEDS`, pro Zone) auf **1050** (`UPDATELEDS`, ein
+  Paket pro Controller/Frame) — weniger Verbindungen, einfacherer Code,
+  behebt nebenbei einen Offset-Parsing-Bug in der Zonen-Slicing-Logik;
+  1050 war im eigenen Stabil-Build-Test bereits 60 s bei 20 FPS
+  absturzfrei verifiziert. (b) Byte-identische Frames werden pro Controller
+  übersprungen (gecachtes letztes Bild + Zeitstempel), nur bei Änderung
+  oder nach 1 s Keepalive erneut gesendet — ruhende Zustände (grau/grün)
+  fallen dadurch auf ~1 Verbindung/s. Live gemessen (isoliert vom
+  produktiven Overlay, das parallel dieselbe state.txt beschreibt hätte):
+  Baseline-TIME_WAIT-Bestand blieb über 2 Minuten Leerlauf stabil; ein
+  gezieltes 11-Sekunden-Fenster zeigte genau 10 neue TIME_WAIT-Einträge
+  (≈0,9/s) statt der ~20/s vor dem Fix. (c) Gesamt-Bildrate an die Zahl der
+  angesteuerten Controller gekoppelt gedeckelt: `fps = clamp(40/n, 1, 20)`,
+  damit Controller × FPS ≤ 40/s bleibt, auch wenn jeder Frame tatsächlich
+  neu ist (Animationszustand bei vielen Geräten).
+- **install.sh riss die funktionierende OpenRGB-Installation vor einem
+  fehlschlagfähigen Download ab** (`rm -rf` vor dem Download; ein
+  Fehlschlag hätte mit `set -e` den Installer mitten im kaputten
+  Zwischenzustand abgebrochen — gar kein OpenRGB mehr vorhanden). Fix:
+  Download/Entpacken in `tools/OpenRGB.new`, dort verifizieren (Existenz
+  der .exe), **erst danach** tauschen (alt → `.old`, `.new` → aktiv); das
+  Entfernen von `.old` toleriert Fehlschlag (`|| true`, z. B. gesperrte
+  Datei einer noch laufenden Instanz) ohne den Installer abzubrechen.
+
+*Wichtig (alle in `SignalAnimator.cs`, sofern nicht anders vermerkt):*
+Singleton-Mutex-Bug behoben (`WaitOne` wurde nicht in jedem Pfad
+aufgerufen); `UPDATELEDS`-`data_size` zählt jetzt korrekt sich selbst mit
+(4 + Rest, vorher fehlte das eigene Feld); `state.txt`-Lesen nutzt
+`FileShare.ReadWrite | FileShare.Delete` (verhindert gelegentliches
+Scheitern des atomaren Move-Item-Renames im Overlay); Log-Datei wird beim
+Start fortgeschrieben statt gelöscht (auf ~200 Zeilen getrimmt), Herzschlag
+nur noch alle ~30 s; `ClaudeSignal.ps1` verschiebt die
+Server-/Animator-Absicherung in den Tick (1. Tick sofort, danach alle 20
+Ticks ≈ 10 s) statt nur einmal beim Start — beide werden dadurch neu
+gestartet, falls sie über Nacht sterben; der Animator selbst beendet sich
+nach 10 Minuten durchgehendem Grau bewusst (Ressourcen sparen), die
+Tick-Überwachung holt ihn bei Bedarf zurück; Antwortgrößen über 4 MB werden
+abgelehnt; ein „hängt in alter Farbe fest"-Schutz erzwingt Grau, wenn
+`state.txt` aus irgendeinem Grund dauerhaft nicht lesbar ist; `install.sh`
+prüft jetzt vor dem Kompilieren, ob eine alte Animator-Instanz die .exe
+sperrt (bessere Fehlermeldung statt kryptischem `csc`-Fehler — live
+reproduziert: der produktive, durch die eigenen Hooks dieser Session
+gestartete Animator sperrte die Datei tatsächlich); läuft OpenRGB noch von
+einem alten/anderen Binärpfad, weist `install.sh` darauf hin, dass ein
+manueller Neustart nötig ist, statt den Prozess selbst zu beenden.
+
+*Klein:* Antworten überspringen unerwartete Pakete (z. B.
+`DEVICE_LIST_UPDATED`) bis zum erwarteten Paket; `ORGB`-Magic wird auf
+Empfangsseite geprüft; Verbindungsaufbau nutzt `BeginConnect` mit echtem
+2-s-Timeout statt blockierendem `Connect`; die Animationsuhr läuft über
+`Stopwatch` (monoton) statt `DateTime.UtcNow`; Log-Zeitstempel tragen ein
+„Z"-Suffix (bleiben UTC); Header und Payload werden in einem `Write`
+gesendet, `NoDelay=true` (kein Nagle-Delay).
+
+*Live-Verifikation:* `csc /warn:4 /warnaserror /langversion:5` auf einer
+Kopie kompiliert warnungsfrei. Der gehärtete Animator lief gegen den
+laufenden stabilen Server, Log zeigt weiterhin 108 LEDs für Gerät 0; alle
+fünf Zustände durchlaufen sauber (isoliert vom produktiven Overlay
+getestet, das parallel dieselbe `state.txt` beschreibt — eine anfängliche
+Testrunde ohne Isolation zeigte genau dieses Race, kein Fehler im
+Animator). 10-Minuten-Leerlaufende mit einer temporären 30-s-Konstante
+verifiziert (Log: „Leerlauf-Ende … -- beende mich", Prozess anschließend
+beendet); der Commit selbst verwendet die reguläre 10-Minuten-Konstante.

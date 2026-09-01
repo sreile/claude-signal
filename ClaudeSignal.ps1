@@ -47,6 +47,23 @@ try {
             [System.Windows.Media.ColorConverter]::ConvertFromString($hex))
     }
 
+    # Server + Animator sicherstellen — läuft im Tick (siehe unten), nicht nur
+    # einmal beim Start, damit beide auch neu starten, wenn sie über Nacht
+    # sterben (SignalAnimator.exe beendet sich zudem bewusst nach 10 Minuten
+    # durchgehendem Leerlauf, siehe Update 11 — das hier holt ihn zurück).
+    function Assure-RgbBackend {
+        try {
+            if ((Test-Path -LiteralPath $orgbExe) -and -not (Get-Process -Name OpenRGB -ErrorAction SilentlyContinue)) {
+                Start-Process -FilePath $orgbExe -ArgumentList @('--server','--startminimized') -WindowStyle Hidden
+            }
+        } catch { }
+        try {
+            if ((Test-Path -LiteralPath $animExe) -and -not (Get-Process -Name SignalAnimator -ErrorAction SilentlyContinue)) {
+                Start-Process -FilePath $animExe -WindowStyle Hidden
+            }
+        } catch { }
+    }
+
     # --- Fenster ---
     $window = New-Object System.Windows.Window
     $window.WindowStyle        = 'None'
@@ -120,10 +137,14 @@ try {
 
     # --- Poll-Timer: 500 ms ---
     $script:lastColor = ''
+    $script:tickCounter = 0
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(500)
     $timer.Add_Tick({
         try {
+            $script:tickCounter++
+            # Erster Tick sofort, danach alle 20 Ticks (~10 s) — hält Server/Animator am Leben.
+            if ($script:tickCounter -eq 1 -or ($script:tickCounter % 20) -eq 0) { Assure-RgbBackend }
             $state = Get-SignalState -SessionsDir $sessionsDir
             if ($state.Color -ne $script:lastColor) {
                 $script:lastColor = $state.Color
@@ -147,18 +168,6 @@ try {
             $ellipse.ToolTip = 'Claude Signal: Statusdateien nicht lesbar'
         }
     })
-
-    # OpenRGB-Server UND Animator starten, falls sie nicht schon laufen.
-    try {
-        if ((Test-Path -LiteralPath $orgbExe) -and -not (Get-Process -Name OpenRGB -ErrorAction SilentlyContinue)) {
-            Start-Process -FilePath $orgbExe -ArgumentList @('--server','--startminimized') -WindowStyle Hidden
-        }
-    } catch { }
-    try {
-        if ((Test-Path -LiteralPath $animExe) -and -not (Get-Process -Name SignalAnimator -ErrorAction SilentlyContinue)) {
-            Start-Process -FilePath $animExe -WindowStyle Hidden
-        }
-    } catch { }
 
     $timer.Start()
     # Kein initiales Show: der erste Tick blendet den Punkt nur ein, wenn eine Session existiert.

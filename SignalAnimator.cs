@@ -9,13 +9,24 @@
 // Eine EINZELNE dauerhafte SDK-Verbindung, auf der viele LED-Update-Pakete
 // nacheinander gesendet werden, wird vom OpenRGB-Server nach 1-2 Paketen
 // sauber geschlossen (kein Absturz, aber auch kein Streaming moeglich).
-// Fix: fuer JEDES Update-Paket (pro Zone, pro Frame) eine frische, kurzlebige
-// TCP-Verbindung oeffnen -> senden -> schliessen. Lokal ueber Loopback dauert
-// ein voller Connect+Handshake+Send+Close-Zyklus < 1 ms -- das reicht mit
-// riesigem Puffer fuer 20 FPS.
+// Fix: fuer JEDES Update-Paket (pro Controller, pro Frame) eine frische,
+// kurzlebige TCP-Verbindung oeffnen -> senden -> schliessen.
+//
+// Haertung nach Review (siehe Update 11 im Spec-Dokument):
+// - EIN Paket pro Controller pro Frame (1050 UPDATELEDS) statt einem pro
+//   Zone -- weniger Verbindungen, einfacher, und I2-Bug (data_size zaehlte
+//   sich nicht selbst mit) automatisch mitbehoben.
+// - Byte-identische Frames werden uebersprungen (nur 1x/s Keepalive), damit
+//   ein Leerlauf-Zustand (grau/gruen) nicht unnoetig viele Verbindungen pro
+//   Sekunde erzeugt (Port-Erschoepfungsrisiko bei vielen Controllern).
+// - Bild-Frequenz wird an die Zahl der Controller gekoppelt gedeckelt
+//   (Controller * FPS <= 40), damit auch der Animations-Fall (rot/gelb) bei
+//   AllRgbDevices mit vielen Geraeten nicht zu viele Verbindungen/Sekunde
+//   erzeugt.
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
@@ -24,7 +35,6 @@ using System.Threading;
 class SignalAnimator
 {
     // --- OpenRGB SDK-Protokoll ---
-    const string Magic = "ORGB";
     const string HostAddr = "127.0.0.1";
     const int Port = 6742;
     const int ClientProtocolVersion = 1; // haelt das Controller-Data-Layout einfach (keine Brightness-Felder)
@@ -33,12 +43,16 @@ class SignalAnimator
     const uint PKT_REQUEST_CONTROLLER_DATA = 1;
     const uint PKT_REQUEST_PROTOCOL_VERSION = 40;
     const uint PKT_SET_CLIENT_NAME = 50;
-    const uint PKT_RGBCONTROLLER_UPDATEZONELEDS = 1051;
+    const uint PKT_RGBCONTROLLER_UPDATELEDS = 1050;
     const uint PKT_RGBCONTROLLER_SETCUSTOMMODE = 1100;
 
-    const int FrameIntervalMs = 50; // 20 FPS
+    const int MaxReplySize = 4 * 1024 * 1024; // I9: Wire-Laengen deckeln
     const int StaleMs = 10000;
     const int SocketTimeoutMs = 2000;
+    const int KeepaliveMs = 1000;             // C1b: unveraenderte Frames trotzdem 1x/s senden
+    const int IdleExitMs = 600000;             // I6: 10 Minuten durchgehend grau -> beenden
+    const int HeartbeatMs = 30000;             // I4: Herzschlag nur alle ~30 s
+    const int MaxLogLines = 200;               // I4: Log-Datei bleibt begrenzt
 
     static Mutex mutex;
     static string baseDir;
@@ -50,40 +64,45 @@ class SignalAnimator
     static List<string> logLines = new List<string>();
     static string lastLoggedState = "";
     static string lastKnownState = "gray";
+    static long lastGoodEpochMs = 0;   // I11: gegen "haengt in alter Farbe fest"
     static long frameCount = 0;
-
-    class ZoneInfo
-    {
-        public int Index;
-        public int LedCount;
-    }
+    static long lastHeartbeatMs = 0;
+    static long grayStartMs = -1;      // I6: seit wann durchgehend grau
+    static int frameIntervalMs = 50;   // C1c: dynamisch an Controller-Zahl gekoppelt
+    static Stopwatch clock;            // M4: monotone Animations-Uhr
 
     class ControllerInfo
     {
         public int Index;
         public int TotalLeds;
-        public List<ZoneInfo> Zones;
+        public byte[] LastSentFrame;
+        public long LastSentMs;
     }
 
     static List<ControllerInfo> controllers = new List<ControllerInfo>();
 
     static int Main()
     {
-        bool createdNew;
+        bool acquired = false;
         try
         {
-            mutex = new Mutex(false, "Local\\ClaudeSignalAnimatorSingleton", out createdNew);
-            bool acquired = createdNew;
-            if (!acquired)
+            mutex = new Mutex(false, "Local\\ClaudeSignalAnimatorSingleton");
+            try
             {
-                try { acquired = mutex.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
+                acquired = mutex.WaitOne(0);
             }
-            if (!acquired) return 0;
+            catch (AbandonedMutexException)
+            {
+                // Vorheriger Besitzer ist abgestuerzt -- der Wait hat den Mutex trotzdem uebernommen.
+                acquired = true;
+            }
         }
         catch
         {
             return 0;
         }
+
+        if (!acquired) { return 0; }
 
         try
         {
@@ -106,14 +125,14 @@ class SignalAnimator
 
         try { Directory.CreateDirectory(baseDir); } catch { }
 
-        logLines.Clear();
+        LoadExistingLog();
         Log("SignalAnimator gestartet");
 
         ReadConfig();
         Log("Konfiguration: AllRgbDevices=" + allRgbDevices);
 
+        clock = Stopwatch.StartNew();
         bool haveControllers = false;
-        long startMs = NowMs();
 
         while (true)
         {
@@ -123,7 +142,9 @@ class SignalAnimator
                 if (haveControllers)
                 {
                     EnsureDirectMode();
-                    Log("Verbunden: " + controllers.Count + " Controller, " + TotalLedsSummary());
+                    RecomputeFrameInterval();
+                    Log("Verbunden: " + controllers.Count + " Controller, " + TotalLedsSummary() +
+                        ", Frameintervall=" + frameIntervalMs + " ms");
                 }
                 else
                 {
@@ -141,23 +162,44 @@ class SignalAnimator
                     lastLoggedState = state;
                 }
 
-                long t = NowMs() - startMs;
+                // I6: nach 10 Minuten durchgehend Grau selbst beenden -- die
+                // Tick-Ueberwachung im Overlay (alle ~10 s) startet bei Bedarf neu.
+                if (state == "gray")
+                {
+                    if (grayStartMs < 0) { grayStartMs = NowMs(); }
+                    else if (NowMs() - grayStartMs >= IdleExitMs)
+                    {
+                        Log("Leerlauf-Ende: " + (IdleExitMs / 1000) + " s durchgehend grau -- beende mich");
+                        return;
+                    }
+                }
+                else
+                {
+                    grayStartMs = -1;
+                }
+
+                long t = clock.ElapsedMilliseconds;
                 bool allOk = true;
 
                 for (int ci = 0; ci < controllers.Count; ci++)
                 {
                     ControllerInfo c = controllers[ci];
-                    byte[] colorsAll = BuildFrame(state, t, c.TotalLeds);
-                    int offset = 0;
-                    for (int zi = 0; zi < c.Zones.Count; zi++)
+                    byte[] frame = BuildFrame(state, t, c.TotalLeds);
+                    bool sameAsLast = FramesEqual(frame, c.LastSentFrame);
+                    bool keepaliveDue = (NowMs() - c.LastSentMs) >= KeepaliveMs;
+                    if (sameAsLast && !keepaliveDue)
                     {
-                        ZoneInfo z = c.Zones[zi];
-                        if (z.LedCount <= 0) { continue; }
-                        byte[] slice = new byte[z.LedCount * 4];
-                        Array.Copy(colorsAll, offset * 4, slice, 0, z.LedCount * 4);
-                        offset += z.LedCount;
-                        bool ok = SendZoneUpdate(c.Index, z.Index, z.LedCount, slice);
-                        if (!ok) { allOk = false; }
+                        continue; // C1b: unveraendertes Bild -- keine Verbindung noetig
+                    }
+                    bool ok = SendControllerUpdate(c.Index, c.TotalLeds, frame);
+                    if (ok)
+                    {
+                        c.LastSentFrame = frame;
+                        c.LastSentMs = NowMs();
+                    }
+                    else
+                    {
+                        allOk = false;
                     }
                 }
 
@@ -168,9 +210,10 @@ class SignalAnimator
                 }
 
                 frameCount++;
-                if (frameCount % 100 == 0)
+                if (NowMs() - lastHeartbeatMs >= HeartbeatMs)
                 {
-                    Log("Herzschlag: zustand=" + state + " frames=" + frameCount);
+                    lastHeartbeatMs = NowMs();
+                    Log("Herzschlag: zustand=" + state + " frames=" + frameCount + " frameIntervalMs=" + frameIntervalMs);
                 }
             }
             catch (Exception ex)
@@ -179,22 +222,39 @@ class SignalAnimator
                 haveControllers = false;
             }
 
-            Thread.Sleep(FrameIntervalMs);
+            Thread.Sleep(frameIntervalMs);
         }
     }
 
     // ---------------------------------------------------------------
-    // Logging: bewusst einfach gehalten -- bei jedem nennenswerten
-    // Ereignis (nicht bei jedem Frame) wird die GESAMTE Log-Datei neu
-    // geschrieben, begrenzt auf die letzten 80 Zeilen (< 100 Zeilen).
+    // Logging: bei jedem nennenswerten Ereignis (nicht bei jedem Frame)
+    // wird die GESAMTE Log-Datei neu geschrieben, begrenzt auf die letzten
+    // ~200 Zeilen. Beim Start wird die bestehende Datei fortgesetzt
+    // (getrimmt), nicht geloescht -- sonst verliert man den Verlauf vor
+    // einem Absturz/Neustart genau dann, wenn man ihn braeuchte.
     // ---------------------------------------------------------------
+    static void LoadExistingLog()
+    {
+        logLines = new List<string>();
+        try
+        {
+            if (File.Exists(logFile))
+            {
+                string[] existing = File.ReadAllLines(logFile);
+                int start = Math.Max(0, existing.Length - MaxLogLines);
+                for (int i = start; i < existing.Length; i++) { logLines.Add(existing[i]); }
+            }
+        }
+        catch { }
+    }
+
     static void Log(string msg)
     {
         try
         {
-            string line = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss") + " " + msg;
+            string line = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss") + "Z " + msg;
             logLines.Add(line);
-            while (logLines.Count > 80) { logLines.RemoveAt(0); }
+            while (logLines.Count > MaxLogLines) { logLines.RemoveAt(0); }
             File.WriteAllText(logFile, string.Join(Environment.NewLine, logLines.ToArray()) + Environment.NewLine);
         }
         catch { }
@@ -217,9 +277,31 @@ class SignalAnimator
         return (long)diff.TotalMilliseconds;
     }
 
+    // C1c: Bildrate an die Zahl der aktiven Controller koppeln, damit die
+    // gesamte Verbindungsrate (Controller * FPS) 40/s nicht uebersteigt --
+    // auch wenn jeder Frame tatsaechlich neu ist (Animationszustand).
+    static void RecomputeFrameInterval()
+    {
+        int n = Math.Max(1, controllers.Count);
+        double fps = 40.0 / n;
+        if (fps > 20.0) { fps = 20.0; }
+        if (fps < 1.0) { fps = 1.0; }
+        frameIntervalMs = (int)Math.Round(1000.0 / fps);
+    }
+
+    static bool FramesEqual(byte[] a, byte[] b)
+    {
+        if (a == null || b == null) { return false; }
+        if (a.Length != b.Length) { return false; }
+        for (int i = 0; i < a.Length; i++) { if (a[i] != b[i]) { return false; } }
+        return true;
+    }
+
     // ---------------------------------------------------------------
     // config.json: nur "AllRgbDevices": true interessiert -- naiver
-    // String-Check reicht, die Datei ist maschinengeneriert.
+    // String-Check reicht, die Datei ist maschinengeneriert. Wird nur
+    // beim Start gelesen -- nach einer Config-Aenderung den Animator
+    // einmal neu starten (Stop-Process -Name SignalAnimator).
     // ---------------------------------------------------------------
     static void ReadConfig()
     {
@@ -237,9 +319,12 @@ class SignalAnimator
     }
 
     // ---------------------------------------------------------------
-    // state.txt: Format "<zustand> <epochMs>". Sharing-Konflikte werden
-    // toleriert (kurzer Retry), sonst bleibt der letzte bekannte Zustand.
-    // Aelter als 10 s oder fehlend/kaputt -> "gray".
+    // state.txt: Format "<zustand> <epochMs>". FileShare.ReadWrite|Delete,
+    // damit das atomare Move-Item-Rename des Overlays nicht gelegentlich an
+    // einer offenen Lesehandle scheitert (I3). Sharing-Konflikte werden
+    // toleriert (kurzer Retry). I11: haengt das Lesen laenger als StaleMs
+    // fest (aus welchem Grund auch immer), faellt der Zustand auf "gray"
+    // zurueck, statt für immer die letzte Farbe zu zeigen.
     // ---------------------------------------------------------------
     static string ReadState()
     {
@@ -248,8 +333,9 @@ class SignalAnimator
         {
             try
             {
-                if (!File.Exists(stateFile)) { return "gray"; }
-                using (FileStream fs = new FileStream(stateFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                if (!File.Exists(stateFile)) { return StaleFallback(); }
+                using (FileStream fs = new FileStream(stateFile, FileMode.Open, FileAccess.Read,
+                                                        FileShare.ReadWrite | FileShare.Delete))
                 using (StreamReader sr = new StreamReader(fs))
                 {
                     content = sr.ReadToEnd();
@@ -266,47 +352,94 @@ class SignalAnimator
             }
         }
 
-        if (content == null) { return lastKnownState; }
+        if (content == null) { return StaleFallback(); }
 
         content = content.Trim();
         string[] parts = content.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2) { return lastKnownState; }
+        if (parts.Length < 2) { return StaleFallback(); }
 
         long epochMs;
-        if (!long.TryParse(parts[1], out epochMs)) { return lastKnownState; }
+        if (!long.TryParse(parts[1], out epochMs)) { return StaleFallback(); }
 
         if (NowMs() - epochMs > StaleMs) { return "gray"; }
 
         lastKnownState = parts[0];
+        lastGoodEpochMs = epochMs;
+        return lastKnownState;
+    }
+
+    static string StaleFallback()
+    {
+        if (NowMs() - lastGoodEpochMs > StaleMs) { return "gray"; }
         return lastKnownState;
     }
 
     // ---------------------------------------------------------------
     // Netzwerk-Grundfunktionen
     // ---------------------------------------------------------------
-    static void SendPacket(NetworkStream ns, uint deviceIdx, uint packetId, byte[] payload)
+    static TcpClient OpenConnection()
     {
-        byte[] header = new byte[16];
-        Encoding.ASCII.GetBytes(Magic).CopyTo(header, 0);
-        BitConverter.GetBytes(deviceIdx).CopyTo(header, 4);
-        BitConverter.GetBytes(packetId).CopyTo(header, 8);
-        uint len = (payload == null) ? 0 : (uint)payload.Length;
-        BitConverter.GetBytes(len).CopyTo(header, 12);
-        ns.Write(header, 0, header.Length);
-        if (payload != null && payload.Length > 0)
-        {
-            ns.Write(payload, 0, payload.Length);
-        }
+        TcpClient client = new TcpClient();
+        client.NoDelay = true; // M7: kein Nagle-Delay fuer unsere kleinen Pakete
+        client.SendTimeout = SocketTimeoutMs;
+        client.ReceiveTimeout = SocketTimeoutMs;
+        ConnectWithTimeout(client, SocketTimeoutMs);
+        return client;
     }
 
+    // M3: Verbindungsaufbau mit echtem Timeout statt blockierendem Connect().
+    static void ConnectWithTimeout(TcpClient client, int timeoutMs)
+    {
+        IAsyncResult ar = client.BeginConnect(HostAddr, Port, null, null);
+        bool ok = ar.AsyncWaitHandle.WaitOne(timeoutMs);
+        if (!ok)
+        {
+            try { client.Close(); } catch { }
+            throw new IOException("Verbindungsaufbau-Timeout nach " + timeoutMs + " ms");
+        }
+        client.EndConnect(ar); // wirft, falls der Connect selbst fehlgeschlagen ist
+    }
+
+    // M7: Header+Payload in einem Write.
+    static void SendPacket(NetworkStream ns, uint deviceIdx, uint packetId, byte[] payload)
+    {
+        int payloadLen = (payload == null) ? 0 : payload.Length;
+        byte[] full = new byte[16 + payloadLen];
+        full[0] = (byte)'O'; full[1] = (byte)'R'; full[2] = (byte)'G'; full[3] = (byte)'B';
+        BitConverter.GetBytes(deviceIdx).CopyTo(full, 4);
+        BitConverter.GetBytes(packetId).CopyTo(full, 8);
+        BitConverter.GetBytes((uint)payloadLen).CopyTo(full, 12);
+        if (payloadLen > 0) { Array.Copy(payload, 0, full, 16, payloadLen); }
+        ns.Write(full, 0, full.Length);
+    }
+
+    // M2: Magic-Praefix verifizieren. I9: Antwortgroesse deckeln.
     static byte[] RecvPacket(NetworkStream ns, out uint deviceIdx, out uint packetId)
     {
         byte[] header = ReadExact(ns, 16);
+        if (header[0] != (byte)'O' || header[1] != (byte)'R' || header[2] != (byte)'G' || header[3] != (byte)'B')
+        {
+            throw new IOException("Ungueltiges Magic-Praefix im Antwort-Header");
+        }
         deviceIdx = BitConverter.ToUInt32(header, 4);
         packetId = BitConverter.ToUInt32(header, 8);
         uint size = BitConverter.ToUInt32(header, 12);
+        if (size > MaxReplySize) { throw new IOException("Antwortgroesse zu gross: " + size + " Byte"); }
         if (size == 0) { return new byte[0]; }
         return ReadExact(ns, (int)size);
+    }
+
+    // M1: fremde/unaufgeforderte Pakete (z. B. DEVICE_LIST_UPDATED=100)
+    // ueberspringen, bis das erwartete Paket kommt (oder aufgeben).
+    static byte[] RecvExpected(NetworkStream ns, uint expectedPacketId)
+    {
+        for (int attempts = 0; attempts < 8; attempts++)
+        {
+            uint di, pi;
+            byte[] payload = RecvPacket(ns, out di, out pi);
+            if (pi == expectedPacketId) { return payload; }
+        }
+        throw new IOException("Erwartetes Paket " + expectedPacketId + " nicht erhalten (zu viele fremde Pakete)");
     }
 
     static byte[] ReadExact(NetworkStream ns, int n)
@@ -325,8 +458,7 @@ class SignalAnimator
     static bool DoHandshake(NetworkStream ns)
     {
         SendPacket(ns, 0, PKT_REQUEST_PROTOCOL_VERSION, BitConverter.GetBytes((uint)ClientProtocolVersion));
-        uint di, pi;
-        byte[] reply = RecvPacket(ns, out di, out pi);
+        byte[] reply = RecvExpected(ns, PKT_REQUEST_PROTOCOL_VERSION);
         if (reply.Length < 4) { return false; }
         SendPacket(ns, 0, PKT_SET_CLIENT_NAME, Encoding.ASCII.GetBytes("Claude Signal\0"));
         return true;
@@ -343,38 +475,35 @@ class SignalAnimator
     }
 
     // ---------------------------------------------------------------
-    // Controller-Liste + Zonen holen (byte-genau gegen den laufenden
-    // Server verifiziert -- siehe Spec Update 10: 108 LEDs fuer die
-    // Turtle Beach Vulcan II via Geraet 0, nicht 109).
+    // Controller-Liste holen (byte-genau gegen den laufenden Server
+    // verifiziert -- siehe Spec Update 10: 108 LEDs fuer die Turtle Beach
+    // Vulcan II via Geraet 0, nicht 109). Zonen werden nur noch ueberlaufen
+    // (fuer den korrekten Offset bis num_leds), nicht mehr gespeichert --
+    // seit C1a wird pro Controller in einem Stueck aktualisiert (1050),
+    // nicht mehr pro Zone (1051).
     // ---------------------------------------------------------------
     static bool RefreshControllers()
     {
         List<ControllerInfo> fresh = new List<ControllerInfo>();
         try
         {
-            using (TcpClient client = new TcpClient())
+            using (TcpClient client = OpenConnection())
+            using (NetworkStream ns = client.GetStream())
             {
-                client.SendTimeout = SocketTimeoutMs;
-                client.ReceiveTimeout = SocketTimeoutMs;
-                client.Connect(HostAddr, Port);
-                using (NetworkStream ns = client.GetStream())
+                if (!DoHandshake(ns)) { Log("Handshake fehlgeschlagen"); return false; }
+
+                SendPacket(ns, 0, PKT_REQUEST_CONTROLLER_COUNT, new byte[0]);
+                byte[] countPayload = RecvExpected(ns, PKT_REQUEST_CONTROLLER_COUNT);
+                if (countPayload.Length < 4) { Log("Controller-Zaehler-Antwort zu kurz"); return false; }
+                int count = (int)BitConverter.ToUInt32(countPayload, 0);
+
+                int limit = allRgbDevices ? count : Math.Min(count, 1);
+                for (int idx = 0; idx < limit; idx++)
                 {
-                    if (!DoHandshake(ns)) { Log("Handshake fehlgeschlagen"); return false; }
-
-                    SendPacket(ns, 0, PKT_REQUEST_CONTROLLER_COUNT, new byte[0]);
-                    uint di, pi;
-                    byte[] countPayload = RecvPacket(ns, out di, out pi);
-                    if (countPayload.Length < 4) { Log("Controller-Zaehler-Antwort zu kurz"); return false; }
-                    int count = (int)BitConverter.ToUInt32(countPayload, 0);
-
-                    int limit = allRgbDevices ? count : Math.Min(count, 1);
-                    for (int idx = 0; idx < limit; idx++)
-                    {
-                        SendPacket(ns, (uint)idx, PKT_REQUEST_CONTROLLER_DATA, BitConverter.GetBytes((uint)ClientProtocolVersion));
-                        byte[] data = RecvPacket(ns, out di, out pi);
-                        ControllerInfo info = ParseControllerData(data, idx);
-                        if (info != null && info.TotalLeds > 0) { fresh.Add(info); }
-                    }
+                    SendPacket(ns, (uint)idx, PKT_REQUEST_CONTROLLER_DATA, BitConverter.GetBytes((uint)ClientProtocolVersion));
+                    byte[] data = RecvExpected(ns, PKT_REQUEST_CONTROLLER_DATA);
+                    ControllerInfo info = ParseControllerData(data, idx);
+                    if (info != null && info.TotalLeds > 0) { fresh.Add(info); }
                 }
             }
         }
@@ -414,20 +543,15 @@ class SignalAnimator
             }
 
             ushort numZones = BitConverter.ToUInt16(buf, off); off += 2;
-            List<ZoneInfo> zones = new List<ZoneInfo>();
             for (int z = 0; z < numZones; z++)
             {
                 string zname; off = ReadString(buf, off, out zname);
                 off += 4; // zone type
                 off += 4; // leds_min
                 off += 4; // leds_max
-                uint ledsCount = BitConverter.ToUInt32(buf, off); off += 4;
+                off += 4; // leds_count
                 ushort matrixLen = BitConverter.ToUInt16(buf, off); off += 2;
                 off += matrixLen;
-                ZoneInfo zi = new ZoneInfo();
-                zi.Index = z;
-                zi.LedCount = (int)ledsCount;
-                zones.Add(zi);
             }
 
             ushort numLeds = BitConverter.ToUInt16(buf, off); off += 2;
@@ -435,8 +559,9 @@ class SignalAnimator
             ControllerInfo ci = new ControllerInfo();
             ci.Index = idx;
             ci.TotalLeds = numLeds;
-            ci.Zones = zones;
-            Log("Geraet " + idx + " (" + name + "): " + numLeds + " LEDs, " + zones.Count + " Zone(n)");
+            ci.LastSentFrame = null;
+            ci.LastSentMs = 0;
+            Log("Geraet " + idx + " (" + name + "): " + numLeds + " LEDs");
             return ci;
         }
         catch (Exception ex)
@@ -453,17 +578,12 @@ class SignalAnimator
             ControllerInfo c = controllers[i];
             try
             {
-                using (TcpClient client = new TcpClient())
+                using (TcpClient client = OpenConnection())
+                using (NetworkStream ns = client.GetStream())
                 {
-                    client.SendTimeout = SocketTimeoutMs;
-                    client.ReceiveTimeout = SocketTimeoutMs;
-                    client.Connect(HostAddr, Port);
-                    using (NetworkStream ns = client.GetStream())
+                    if (DoHandshake(ns))
                     {
-                        if (DoHandshake(ns))
-                        {
-                            SendPacket(ns, (uint)c.Index, PKT_RGBCONTROLLER_SETCUSTOMMODE, new byte[0]);
-                        }
+                        SendPacket(ns, (uint)c.Index, PKT_RGBCONTROLLER_SETCUSTOMMODE, new byte[0]);
                     }
                 }
             }
@@ -474,39 +594,36 @@ class SignalAnimator
         }
     }
 
-    // Ein Update-Paket = eine frische, kurzlebige Verbindung (siehe Kommentar
-    // am Dateikopf -- eine dauerhafte Verbindung wird vom Server nach 1-2
+    // C1a: EIN Paket pro Controller pro Frame (1050 UPDATELEDS) statt einem
+    // pro Zone -- weniger Verbindungen, einfacherer Code. Jedes Update-Paket
+    // bekommt eine frische, kurzlebige Verbindung (siehe Kommentar am
+    // Dateikopf -- eine dauerhafte Verbindung wird vom Server nach 1-2
     // Paketen sauber geschlossen).
-    static bool SendZoneUpdate(int deviceIdx, int zoneIdx, int ledCount, byte[] colorBytes)
+    static bool SendControllerUpdate(int deviceIdx, int ledCount, byte[] colorBytes)
     {
         try
         {
-            using (TcpClient client = new TcpClient())
+            using (TcpClient client = OpenConnection())
+            using (NetworkStream ns = client.GetStream())
             {
-                client.SendTimeout = SocketTimeoutMs;
-                client.ReceiveTimeout = SocketTimeoutMs;
-                client.Connect(HostAddr, Port);
-                using (NetworkStream ns = client.GetStream())
-                {
-                    if (!DoHandshake(ns)) { return false; }
+                if (!DoHandshake(ns)) { return false; }
 
-                    byte[] inner = new byte[4 + 2 + colorBytes.Length];
-                    BitConverter.GetBytes((uint)zoneIdx).CopyTo(inner, 0);
-                    BitConverter.GetBytes((ushort)ledCount).CopyTo(inner, 4);
-                    colorBytes.CopyTo(inner, 6);
+                byte[] inner = new byte[2 + colorBytes.Length];
+                BitConverter.GetBytes((ushort)ledCount).CopyTo(inner, 0);
+                colorBytes.CopyTo(inner, 2);
 
-                    byte[] payload = new byte[4 + inner.Length];
-                    BitConverter.GetBytes((uint)inner.Length).CopyTo(payload, 0);
-                    inner.CopyTo(payload, 4);
+                byte[] payload = new byte[4 + inner.Length];
+                // I2: data_size zaehlt sich selbst mit (4 Byte Feld + Rest).
+                BitConverter.GetBytes((uint)(4 + inner.Length)).CopyTo(payload, 0);
+                inner.CopyTo(payload, 4);
 
-                    SendPacket(ns, (uint)deviceIdx, PKT_RGBCONTROLLER_UPDATEZONELEDS, payload);
-                }
+                SendPacket(ns, (uint)deviceIdx, PKT_RGBCONTROLLER_UPDATELEDS, payload);
             }
             return true;
         }
         catch (Exception ex)
         {
-            Log("SendZoneUpdate Fehler (Geraet " + deviceIdx + " Zone " + zoneIdx + "): " + ex.Message);
+            Log("SendControllerUpdate Fehler (Geraet " + deviceIdx + "): " + ex.Message);
             return false;
         }
     }
