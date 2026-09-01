@@ -182,3 +182,25 @@ Portabilisierung: install.sh erkennt LOCALAPPDATA/Documents zur Installationszei
 diese Datei — keine hartkodierten Benutzerpfade mehr. install.sh entfernt beim
 Registrieren veraltete Hook-Einträge (alter Pfad/Name). Verteilung als privates
 GitHub-Repo sreile/claude-signal.
+
+**Update 7 (2026-09-01):** Deep-Links abgeschafft — sie holten SignalRGBs
+Fenster manchmal ungefragt in den Vordergrund (auch nach dem Auto-Verstecken
+aus Update 6 bei weiteren Tests noch unzuverlässig/störend). Die
+REST-API-Alternative ist Pro-only (403 bei kostenloser Lizenz), daher neuer
+Ansatz: `ClaudeSignal.ps1` schreibt den aggregierten Zustand bei jedem Tick
+(alle 500 ms) zusätzlich in `state.txt` neben den Statusdateien, Format
+`<zustand> <epochMs>` (epochMs = Unix-Zeit in Millisekunden). Ein einziger,
+dauerhaft installierter SignalRGB-Effekt „Claude Signal" pollt diese Datei
+selbst per XHR (`file://…/state.txt?nc=<cachebuster>`, alle ~600 ms) und
+rendert seinen Zustand direkt — kein Effektwechsel mehr nötig, SignalRGBs
+Fenster wird nie mehr angefasst. Zeitgeber-Pflicht: **ausschließlich
+`requestAnimationFrame`** — `setInterval` wird von SignalRGBs Renderer
+gedrosselt (empirisch erhärtet: die bisherigen Wellen-Effekte liefen
+zuverlässig, weil sie bereits rAF nutzten). Ist `state.txt` älter als 10 s
+(Overlay beendet/abgestürzt), fällt der Effekt selbständig auf Grau zurück.
+`install.sh` generiert die Effektdatei aus der Vorlage
+`signalrgb-effects/Claude Signal.html.template` (Platzhalter `{{STATE_URL}}`
+→ der echte `file:///…/ClaudeSignal/state.txt`-Pfad, aus dem zur
+Installationszeit erkannten `%LOCALAPPDATA%` gebildet: Backslashes → `/`,
+Leerzeichen → `%20`) und entfernt beim Deploy die fünf alten Einzel-Effekte
+sowie Testartefakte, falls noch vorhanden.

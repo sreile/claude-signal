@@ -10,7 +10,8 @@ command -v python3 >/dev/null || { echo "FEHLER: python3 fehlt"; exit 1; }
 REPORT_SCRIPT="$SRC/report-status.sh"
 [ -f "$REPORT_SCRIPT" ] || { echo "FEHLER: report-status.sh fehlt"; exit 1; }
 
-ls "$SRC/signalrgb-effects/"*.html >/dev/null 2>&1 || { echo "FEHLER: keine Effektdateien in $SRC/signalrgb-effects"; exit 1; }
+TEMPLATE="$SRC/signalrgb-effects/Claude Signal.html.template"
+[ -f "$TEMPLATE" ] || { echo "FEHLER: $TEMPLATE fehlt"; exit 1; }
 
 # --- Windows-Pfade zur Installationszeit erkennen (kein Hardcoding mehr) ---
 PSEXE="$(command -v powershell.exe || echo /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe)"
@@ -45,18 +46,46 @@ CLAUDE_SIGNAL_OVERLAY_WIN="$OVERLAY_WIN"
 ENV
 echo "signal.env geschrieben: $SRC/signal.env"
 
-# SignalRGB-Effekte installieren (Quelle: Repo). Neustart-Hinweis nur bei Änderung.
+# SignalRGB-Effekt aus Vorlage generieren: {{STATE_URL}} durch den echten
+# file://-Pfad von state.txt ersetzen (aus dem erkannten %LOCALAPPDATA%).
+# Der Effekt pollt state.txt danach selbst — kein Effektwechsel/Deep-Link mehr.
+url_local="${WIN_LOCAL//\\//}"
+url_local="${url_local// /%20}"
+STATE_URL="file:///${url_local}/ClaudeSignal/state.txt"
+
 mkdir -p "$EFF_DST"
+GENERATED="$(mktemp)"
+trap 'rm -f "$GENERATED"' EXIT
+STATE_URL="$STATE_URL" TEMPLATE_PATH="$TEMPLATE" OUT_PATH="$GENERATED" python3 - <<'PY'
+import os
+
+with open(os.environ['TEMPLATE_PATH'], 'r', encoding='utf-8') as f:
+    content = f.read()
+content = content.replace('{{STATE_URL}}', os.environ['STATE_URL'])
+with open(os.environ['OUT_PATH'], 'w', encoding='utf-8') as f:
+    f.write(content)
+PY
+
+DEST_EFFECT="$EFF_DST/Claude Signal.html"
 changed=0
-for f in "$SRC/signalrgb-effects/"*.html; do
-  base=$(basename "$f")
-  cmp -s "$f" "$EFF_DST/$base" || changed=1
-  cp "$f" "$EFF_DST/"
-done
-echo "SignalRGB-Effekte kopiert nach: $EFF_DST"
+cmp -s "$GENERATED" "$DEST_EFFECT" 2>/dev/null || changed=1
+cp "$GENERATED" "$DEST_EFFECT"
+rm -f "$GENERATED"
+trap - EXIT
+echo "SignalRGB-Effekt generiert: $DEST_EFFECT"
 if [ "$changed" = 1 ]; then
-  echo "HINWEIS: Effektdateien neu/geändert — SignalRGB einmal neu starten, damit es sie einliest."
+  echo "HINWEIS: Effektdatei neu/geändert — SignalRGB einmal neu starten, damit es sie einliest."
 fi
+
+# Veraltete Einzel-Effekte aus der Deep-Link-Ära (v2) und Testartefakte
+# entfernen, falls noch von einer älteren Installation vorhanden.
+for obsolete in "Claude Blau.html" "Claude Blau Puls.html" "Claude Gruen.html" \
+                "Claude Rot Puls.html" "Claude Rot Lauf.html" "Claude Signal Probe.html"; do
+  if [ -f "$EFF_DST/$obsolete" ]; then
+    rm -f "$EFF_DST/$obsolete"
+    echo "Veraltete Effektdatei entfernt: $EFF_DST/$obsolete"
+  fi
+done
 
 export CLAUDE_SIGNAL_SCRIPT="$REPORT_SCRIPT"
 

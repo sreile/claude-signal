@@ -9,13 +9,10 @@ if (-not $script:mutex.WaitOne(0)) { exit 0 }
 try {
     Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
-    Add-Type -Namespace ClaudeSignal -Name Win32 -MemberDefinition @'
-[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
-'@
-
     $baseDir     = Join-Path $env:LOCALAPPDATA 'ClaudeSignal'
     $sessionsDir = Join-Path $baseDir 'sessions'
     $configPath  = Join-Path $baseDir 'config.json'
+    $statePath   = Join-Path $baseDir 'state.txt'
     New-Item -ItemType Directory -Path $sessionsDir -Force | Out-Null
 
     # Logik neben dem Skript laden (funktioniert deployt UND direkt aus dem Repo/UNC)
@@ -26,32 +23,13 @@ try {
     # yellowbusy=wartet+Hintergrund arbeitet noch (rot, gleiche Farbe wie yellow)
     $colorMap = @{ gray = '#1050E0'; green = '#43A047'; red = '#2878FF'; yellow = '#E53935'; yellowbusy = '#E53935' }
 
-    # Tastatur-Backend: Farbwechsel -> SignalRGB-Effekt (Spec-Erweiterung Tastatur-Backend)
-    $sigMap = @{ gray = 'Claude Blau'; green = 'Claude Gruen'; red = 'Claude Blau Puls'; yellow = 'Claude Rot Puls'; yellowbusy = 'Claude Rot Lauf' }
-    $script:sigHideTimer = $null
-    function Invoke-SignalKeyboard([string]$color) {
+    # RGB-Backend: schreibt den Zustand in state.txt; der dauerhaft installierte
+    # SignalRGB-Effekt "Claude Signal" pollt diese Datei selbst per rAF-Loop
+    # (kein Effektwechsel/Deep-Link mehr — siehe Update 7 im Spec-Dokument)
+    function Write-SignalState([string]$color) {
         try {
-            if (-not $sigMap.ContainsKey($color)) { return }
-            $sig = Get-Process -Name SignalRgb -ErrorAction SilentlyContinue
-            if (-not $sig) { return }
-            $hadWindow = ($sig.MainWindowHandle -ne [IntPtr]::Zero)
-            Start-Process ('signalrgb://effect/apply/' + [uri]::EscapeDataString($sigMap[$color]))
-            if (-not $hadWindow) {
-                # Deep-Link kann das SignalRGB-Fenster ungefragt hochholen — dann gleich wieder verstecken
-                if ($script:sigHideTimer) { $script:sigHideTimer.Stop() }
-                $script:sigHideTimer = New-Object System.Windows.Threading.DispatcherTimer
-                $script:sigHideTimer.Interval = [TimeSpan]::FromMilliseconds(600)
-                $script:sigHideTimer.Add_Tick({
-                    try {
-                        $script:sigHideTimer.Stop()
-                        $p = Get-Process -Name SignalRgb -ErrorAction SilentlyContinue
-                        if ($p -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
-                            [ClaudeSignal.Win32]::ShowWindowAsync($p.MainWindowHandle, 0) | Out-Null  # SW_HIDE
-                        }
-                    } catch { }
-                })
-                $script:sigHideTimer.Start()
-            }
+            $ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            Set-Content -LiteralPath $statePath -Value ($color + ' ' + $ms) -Encoding Ascii
         } catch { }
     }
 
@@ -138,9 +116,9 @@ try {
             if ($state.Color -ne $script:lastColor) {
                 $script:lastColor = $state.Color
                 $ellipse.Fill = New-SignalBrush $colorMap[$state.Color]
-                Invoke-SignalKeyboard $state.Color
                 Set-DotPulse $state.Color
             }
+            Write-SignalState $state.Color   # jeden Tick schreiben — gibt dem Effekt einen Herzschlag
             if ($state.Color -eq 'gray') {
                 if ($window.IsVisible) { $window.Hide() }   # kein Punkt ohne Session
             } elseif (-not $window.IsVisible) { $window.Show() }
@@ -150,9 +128,9 @@ try {
             if ($script:lastColor -ne 'gray') {
                 $script:lastColor = 'gray'
                 $ellipse.Fill = New-SignalBrush $colorMap['gray']
-                Invoke-SignalKeyboard 'gray'
                 Set-DotPulse 'gray'
             }
+            Write-SignalState 'gray'
             if ($window.IsVisible) { $window.Hide() }
             $ellipse.ToolTip = 'Claude Signal: Statusdateien nicht lesbar'
         }
@@ -162,7 +140,7 @@ try {
     $window.Add_Closed({ [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() })
     [System.Windows.Threading.Dispatcher]::Run()
     $timer.Stop()
-    Invoke-SignalKeyboard 'gray'   # Tastatur beim Beenden auf Ruhezustand zurück
+    Write-SignalState 'gray'   # Effekt beim Beenden auf Ruhezustand zurück
 }
 finally {
     $script:mutex.ReleaseMutex()
