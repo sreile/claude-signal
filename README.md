@@ -29,46 +29,47 @@ Beim Absenden einer Antwort springt die Anzeige sofort auf „arbeitet"
 
 ### RGB-Geräte (via OpenRGB)
 
-Die Kopplung läuft komplett lautlos über [OpenRGB](https://openrgb.org/) —
-kein Fenster, kein Effektwechsel, keine Sandbox-Beschränkungen. Ein
-persistenter `OpenRGB.exe --server`-Prozess läuft im Hintergrund und hält die
-zuletzt gesetzte Farbe; das Overlay schickt bei jedem Zustandswechsel einen
-kurzen Wegwerf-Aufruf (`OpenRGB.exe --device 0 --mode direct --color …`), der
-sich automatisch mit dem laufenden Server verbindet und die Farbe umschaltet.
-Pro Zeitpunkt läuft höchstens ein solcher Aufruf — ist noch einer aktiv,
-gewinnt beim nächsten Tick einfach der dann aktuelle Zustand (kein Aufstauen
-paralleler Prozesse).
+Ein kleiner, dauerhaft laufender Hintergrunddienst — `SignalAnimator.exe`
+(C#, von `install.sh` mit dem in jedem .NET Framework mitgelieferten `csc.exe`
+kompiliert, keine zusätzliche Abhängigkeit) — verbindet sich mit
+[OpenRGBs](https://openrgb.org/) SDK-Server (Port 6742) und **streamt echte
+Wellen-/Puls-Animationen direkt auf die einzelnen LEDs**, 20 Bilder pro
+Sekunde. Das Overlay selbst spricht OpenRGB nicht mehr direkt an — es
+schreibt nur den aktuellen Zustand nach `state.txt`, den der Animator
+mehrmals pro Sekunde ausliest. Ein Zustandswechsel zeigt sich dadurch
+innerhalb von unter 100 ms auf den Geräten.
 
 | Zustand | Optik |
 |---|---|
 | Keine Session | Ruhiges Blau, konstant |
-| Arbeitet | Helleres Blau, konstant |
-| Wartet auf dich | Rot, konstant |
-| Wartet auf dich, Hintergrund arbeitet noch | Orange, konstant |
+| Arbeitet | Blaue Welle mit sanftem Atmen |
+| Wartet auf dich | Rotes Pulsieren |
+| Wartet auf dich, Hintergrund arbeitet noch | Rote Welle (schneller) |
 | Fertig | Grün, konstant |
-
-Farbwechsel brauchen wegen der OpenRGB-Client-Latenz (jeder Aufruf lebt
-gemessen ca. 2 Sekunden) einen kurzen Moment. Puls-/Wellenanimationen auf der
-Tastatur — wie es sie bis v4.0 kurzzeitig als Blinken gab — sind als späterer
-Ausbau über OpenRGBs SDK-Streaming-Protokoll vorgesehen; der Bildschirm-Punkt
-pulsiert währenddessen weiterhin ganz normal weiter.
 
 **Profil 1 ist Pflicht (Turtle Beach Vulcan II):** Die Tastatur muss auf
 Onboard-**Profil 1** stehen (`FN+F1`). Das ist die entscheidende, selbst
 herausgefundene Erkenntnis, die OpenRGB überhaupt erst funktionieren ließ —
 auf Profil 2–4 gibt die Firmware die LED-Kontrolle nicht an Software ab.
-Frühere Fehlversuche mit OpenRGB scheiterten daran (plus an Testläufen gegen
-eine zwischenzeitlich gelöschte Programmdatei) — nicht an OpenRGB selbst.
 
-**Alle Geräte statt nur der Tastatur:** Standardmäßig steuert das Overlay nur
-Gerät 0 (die Tastatur). Um wirklich **alle** von OpenRGB erkannten Geräte
-mitfärben zu lassen (Lüfter, AIO-Kühler, RAM-Module, …), lege eine
+**Warum eine gepinnte OpenRGB-Version:** `install.sh` installiert bewusst
+die stabile Version **1.0rc3.1**, nicht den tagesaktuellen Nightly-Build.
+Der Nightly-Build stürzte beim SDK-Streaming auf dieser Tastatur
+reproduzierbar mit einer nativen Schutzverletzung ab (siehe Update 10 im
+Spec-Dokument für die volle Diagnose); die gepinnte stabile Version hat
+dieses Problem nicht. `install.sh` erkennt und ersetzt eine ältere/andere
+OpenRGB-Installation automatisch.
+
+**Alle Geräte statt nur der Tastatur:** Standardmäßig steuert der Animator
+nur Gerät 0 (die Tastatur). Um wirklich **alle** von OpenRGB erkannten Geräte
+mitanimieren zu lassen (Lüfter, AIO-Kühler, RAM-Module, …), lege eine
 `config.json` im Deploy-Ordner an
 (`<LOCALAPPDATA>\ClaudeSignal\config.json`, Inhalt `{"AllRgbDevices": true}`)
 — beim nächsten Verschieben des Punkts schreibt das Overlay diese Einstellung
-zusammen mit der Position automatisch fort. Hinweis: Mainboard-/RAM-RGB über
-OpenRGB braucht meist zusätzlich den PawnIO-Treiber und einmalig
-Admin-Rechte bei der Ersteinrichtung; USB-Lüfter-Hubs in der Regel nicht.
+zusammen mit der Position automatisch fort; der Animator liest `config.json`
+selbst bei jedem (Neu-)Verbinden. Hinweis: Mainboard-/RAM-RGB über OpenRGB
+braucht meist zusätzlich den PawnIO-Treiber und einmalig Admin-Rechte bei der
+Ersteinrichtung; USB-Lüfter-Hubs in der Regel nicht.
 
 **SignalRGB: nicht mehr benötigt.** Frühere Versionen nutzten SignalRGB samt
 Deep-Links bzw. einem selbst-pollenden Effekt — beides erwies sich als
@@ -90,11 +91,14 @@ einmalig zur Installationszeit (per PowerShell + `wslpath`) und hinterlegt ihn
 in `signal.env` neben den Skripten; `report-status.sh` liest diese Datei bei
 jedem Aufruf. `ClaudeSignal.ps1` (WPF, Polling alle 500 ms) liest die
 Statusdateien, aggregiert sie nach der Prioritätsregel oben, färbt den Punkt —
-und schickt bei jedem Zustandswechsel einen kurzen `OpenRGB.exe`-
-Kommandozeilenaufruf, der die zuvor per `--server` gestartete OpenRGB-Instanz
-auf die neue Farbe umschaltet — höchstens einen gleichzeitig (Serialisierung,
-siehe Update 9). Kein Effektwechsel, kein Deep-Link, kein Fenster — die
-frühere SignalRGB-Lösung ist komplett ersetzt (siehe Update 8 im
+und schreibt den aggregierten Zustand zusätzlich in `state.txt` (Format
+`<zustand> <epochMs>`, atomar per tmp+rename). `SignalAnimator.exe` (C#,
+eigener Hintergrundprozess, von `ClaudeSignal.ps1` beim Start mitgestartet)
+liest `state.txt` alle ~200 ms, hält dafür eine eigene Verbindung zu OpenRGBs
+SDK-Server offen und streamt 20 Bilder pro Sekunde direkt auf die LEDs —
+kein Effektwechsel, kein Deep-Link, kein Fenster. Die frühere
+SignalRGB-Lösung sowie das kurzlebige v4/v4.1-Modell mit
+Kommandozeilenaufrufen sind komplett ersetzt (siehe Update 8–10 im
 Spec-Dokument).
 
 ```
@@ -108,16 +112,19 @@ Claude Code Hooks (WSL)                Windows
                                       │ ClaudeSignal.ps1 (WPF)      │
                                       │ aggregiert → färbt Punkt    │
                                       └──────────────┬──────────────┘
-                                        Farbwechsel (max. 1 Aufruf gleichzeitig)
+                                        schreibt bei jedem Tick
                                       ┌──────────────▼──────────────┐
-                                      │ OpenRGB.exe --device 0      │
-                                      │  --mode direct --color …    │
-                                      │ (Wegwerf-Client-Aufruf)     │
+                                      │ state.txt (<Zustand> <ms>)  │
                                       └──────────────┬──────────────┘
-                                          verbindet sich automatisch zu
+                                        liest alle ~200 ms
+                                      ┌──────────────▼──────────────┐
+                                      │ SignalAnimator.exe (C#)     │
+                                      │ rendert Welle/Puls, 20 FPS  │
+                                      └──────────────┬──────────────┘
+                                        SDK-Streaming, Port 6742
                                       ┌──────────────▼──────────────┐
                                       │ OpenRGB.exe --server        │
-                                      │ (persistent, hält die Farbe)│
+                                      │ (persistent, gepinnt 1.0rc3.1)│
                                       └──────────────┬──────────────┘
                                                       ▼
                                       angeschlossene RGB-Geräte
@@ -135,13 +142,15 @@ Dokumente-Verzeichnis (per PowerShell + `wslpath`) und hinterlegt sie in
 `signal.env` neben den Skripten — keine hartkodierten Benutzerpfade. Legt bei
 Bedarf ein Backup von `~/.claude/settings.json` an, trägt fehlende Hooks nach
 (und entfernt dabei veraltete Hook-Einträge, die noch auf einen älteren
-Installationsort zeigen), deployt das Overlay und lädt bei Bedarf OpenRGB
-automatisch herunter (Windows-Build, entpackt nach
-`<LOCALAPPDATA>\ClaudeSignal\tools\OpenRGB\`; schlägt der Download fehl,
-ist das nicht fatal — die Installation läuft durch, nur die Geräte-Kopplung
-bleibt dann inaktiv). Räumt außerdem alle Effektdateien früherer Versionen
-aus `Documents\WhirlwindFX\Effects` sowie veraltete v3-Artefakte auf, falls
-noch vorhanden.
+Installationsort zeigen), deployt das Overlay, lädt bei Bedarf die gepinnte
+stabile OpenRGB-Version 1.0rc3.1 automatisch herunter (entpackt nach
+`<LOCALAPPDATA>\ClaudeSignal\tools\OpenRGB\`; ersetzt dabei automatisch eine
+ältere/andere installierte Version; schlägt der Download fehl, ist das nicht
+fatal — die Installation läuft durch, nur die Geräte-Kopplung bleibt dann
+inaktiv) und kompiliert `SignalAnimator.exe` neu aus `SignalAnimator.cs`
+(mit dem in jedem .NET Framework mitgelieferten `csc.exe` — keine
+zusätzliche Abhängigkeit). Räumt außerdem alle Effektdateien früherer
+Versionen aus `Documents\WhirlwindFX\Effects` auf, falls noch vorhanden.
 
 **Voraussetzung:** `python3` muss in WSL installiert sein — `install.sh`
 prüft das und bricht sonst mit Fehlermeldung ab.
@@ -159,7 +168,9 @@ Sessions laden `settings.json` nicht nach.
   einfach inaktiv, der Rest funktioniert normal)
 - Optional, für die Geräte-Kopplung: mindestens ein von OpenRGB
   unterstütztes RGB-Gerät (OpenRGB selbst lädt `install.sh` automatisch
-  herunter)
+  herunter). `SignalAnimator.exe` wird ebenfalls automatisch kompiliert —
+  `csc.exe` gehört zu jeder Windows-.NET-Framework-Installation dazu, keine
+  separate Installation nötig.
 
 **Einrichtung:**
 
@@ -176,7 +187,8 @@ Danach:
 - Hooks gelten erst für **neue** Claude-Code-Sessions — bereits laufende
   Sessions laden `settings.json` nicht nach, also neu starten.
 - Für die Geräte-Kopplung ist nichts weiter zu tun — das Overlay startet den
-  OpenRGB-Server beim ersten Start selbst, lautlos im Hintergrund.
+  OpenRGB-Server und `SignalAnimator.exe` beim ersten Start selbst, lautlos
+  im Hintergrund.
 - Turtle-Beach-Vulcan-II-Nutzer: Tastatur muss auf Onboard-**Profil 1** stehen
   (`FN+F1`) — nur dort gibt die Firmware die LED-Kontrolle an Software frei.
 - Läuft noch eine ältere SignalRGB-Installation: beenden bzw. deinstallieren
@@ -222,13 +234,15 @@ unabhängig weiter.
   cd /mnt/c && powershell.exe -NoProfile -Command 'Get-CimInstance Win32_Process | Where-Object { $_.Name -eq "powershell.exe" -and $_.ProcessId -ne $PID -and $_.CommandLine -like "*-File*ClaudeSignal.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }'
   ```
   (oder du lässt ihn einfach laufen — er startet ohnehin automatisch mit).
-- **Farben anpassen:** `$kbMap` in `ClaudeSignal.ps1` enthält die Hex-Farben
-  pro Zustand (ohne `#`, OpenRGB-Format) — direkt editieren, dann
-  `bash ~/.claude/claude-signal/install.sh` erneut ausführen.
+- **Animationen anpassen:** `SignalAnimator.cs` enthält die Farb-/Wellen-
+  Mathematik pro Zustand (Funktion `BuildFrame`) — editieren, dann
+  `bash ~/.claude/claude-signal/install.sh` erneut ausführen (kompiliert neu).
+  Läuft bereits eine ältere Animator-Version, meldet `install.sh` das und du
+  startest sie einmal manuell neu (`Stop-Process -Name SignalAnimator`).
 
 ## Troubleshooting
 
-**RGB-Geräte reagieren nicht:**
+**RGB-Geräte reagieren nicht oder zeigen keine Animation:**
 - Steht die Tastatur (bei Turtle Beach Vulcan II) auf Profil 1?
 - Existiert
   `<LOCALAPPDATA>\ClaudeSignal\tools\OpenRGB\OpenRGB Windows 64-bit\OpenRGB.exe`?
@@ -236,6 +250,11 @@ unabhängig weiter.
   manuell von https://openrgb.org besorgen und dorthin entpacken.
 - Läuft der Prozess `OpenRGB` (Taskmanager)? Er startet automatisch mit der
   nächsten neuen Claude-Session — bei Bedarf eine neue Session öffnen.
+- Läuft der Prozess `SignalAnimator`? Ebenfalls automatischer Start mit der
+  nächsten neuen Session.
+- **`<LOCALAPPDATA>\ClaudeSignal\animator.log`** ist die erste Anlaufstelle:
+  zeigt Verbindungsstatus, erkannte Geräte samt LED-Zahl, Zustandswechsel und
+  Fehler (auf die letzten ~80 Zeilen begrenzt).
 - Läuft SignalRGB oder Swarm II noch parallel? Beenden — beide kämpfen mit
   OpenRGB um dieselben Geräte.
 
@@ -299,12 +318,13 @@ der Aggregation ignoriert (gelten als stale). Statusdateien, die älter als
   sind außerhalb des Umfangs.
 - Die `PreToolUse`- und `PostToolUse`-Hooks kosten pro Tool-Aufruf ein paar
   Millisekunden zusätzlich.
-- Keine Wellen-/Puls-Animationen mehr auf der Tastatur — OpenRGBs
-  Kommandozeile kann nur einzelne Farben setzen, jeder Zustand zeigt sich
-  daher als konstante Farbe statt als weicher Puls (siehe RGB-Geräte-Abschnitt
-  oben). Auch ein anfänglicher Blink-Ansatz wurde wieder verworfen: gemessen
-  ~2 s Laufzeit pro OpenRGB-Client-Aufruf hätten bei 2 Hz Blinkfrequenz
-  Prozesse gestaut.
 - Die Geräte-Kopplung setzt OpenRGB voraus und funktioniert mit jedem dort
   unterstützten Gerät. Frühere Fehlversuche mit OpenRGB lagen am aktiven
-  Tastatur-Profil (4 statt 1), nicht an OpenRGB selbst — siehe Repo-Verlauf.
+  Tastatur-Profil (4 statt 1) sowie an einem Absturz-Bug im Nightly-Build
+  (siehe Update 10 im Spec-Dokument) — nicht an OpenRGB selbst; die gepinnte
+  stabile Version 1.0rc3.1 umgeht beides.
+- Der SDK-Streaming-Kanal öffnet für jedes einzelne LED-Update-Paket eine
+  kurzlebige, frische TCP-Verbindung statt einer dauerhaften — eine
+  dauerhafte Verbindung wird von OpenRGB nach 1–2 Paketen sauber
+  geschlossen (kein Absturz, aber kein Streaming). Der Verbindungsaufbau
+  über Loopback dauert unter 1 ms, das reicht für 20 FPS mit großem Puffer.

@@ -249,3 +249,77 @@ verfällt der Wunsch einfach und der nächste Tick versucht es erneut
 mit `yellow`, um beide Zustände weiterhin unterscheidbar zu halten. Der
 Shutdown-Handback erzwingt die Ruhefarbe unabhängig von Busy-/Dedupe-Guard
 (direkter `Start-Process`-Aufruf statt `Sync-Keyboard`).
+
+**Update 10 (2026-09-01):** v5 — SDK-Streaming-Animator (C#), statische
+Farben ersetzt durch echte Wellen-/Puls-Effekte. Nutzer-Verdikt: statische
+Farben inakzeptabel, Effekte sind Pflicht.
+
+*Protokoll-Verifikation (byte-genau, gegen den laufenden Server getestet):*
+Handshake (Paket 40, Client-Version 1) → Server antwortet mit Server-Version;
+effektiv = min(Client, Server) = 1. `SET_CLIENT_NAME` (50),
+`REQUEST_CONTROLLER_COUNT` (0), `REQUEST_CONTROLLER_DATA` (1, Payload
+Protokollversion) → Antwort-Blob byte-genau geparst (data_size, type, name,
+vendor [ab Protokoll ≥1], description, version, serial, location, num_modes
++ active_mode + Modes [je 9× u32-Feld + Farben], num_zones + Zones [+
+Matrix], num_leds, num_colors + Farben) — Parser konsumiert exakt
+3297/3297 Byte ohne Rest. **Korrektur:** Turtle Beach Vulcan II hat **108
+LEDs über Gerät 0**, nicht 109 wie ursprünglich angenommen (der Wert 109
+war eine Verwechslung/Näherung aus SignalRGB-Erinnerung) — 108 ist der
+empirisch verifizierte, byte-exakte Wert und dient als Parser-Abnahmetest.
+
+*Kritischer Befund — nativer Absturz im Nightly-Build:* Senden eines
+LED-Farbarrays über das Netzwerk-SDK (sowohl `RGBCONTROLLER_UPDATELEDS`,
+1050, als auch `RGBCONTROLLER_UPDATEZONELEDS`, 1051) an dieses Gerät stürzt
+den `master`-Pipeline-Nightly-Build von OpenRGB reproduzierbar ab
+(Ausnahmecode `0xc0000005`, Modul `ucrtbase.dll`, **identischer
+Faulting-Offset `0x0000000000065655` in 4 unabhängigen Reproduktionen** —
+Windows Event Log, Quelle „Application Error"). Isolationstests: Handshake
+allein, `SETCUSTOMMODE` (1100) allein, CLI-Aufruf
+`OpenRGB.exe --device 0 --mode direct --color RRGGBB` (v4/v4.1s Mechanismus)
+und einzelne `UPDATESINGLELED`-Pakete (1052) sind alle unauffällig; sowohl
+1050 (sofort, ein Aufruf reicht) als auch 1051 (nach ~15–69 Frames Streaming,
+unabhängig von der Bildrate 2–20 FPS) stürzen ab. Fazit: Bug im
+Nightly-Build selbst, nicht im Client-Protokoll.
+
+*Gegentest stabile Version 1.0rc3.1
+(https://codeberg.org/OpenRGB/OpenRGB/releases/download/release_candidate_1.0rc3.1/OpenRGB_1.0rc3.1_Windows_64_5e81e26.zip):*
+kein einziger Absturz über alle Testreihen (einmaliges `UPDATELEDS`,
+`UPDATEZONELEDS` 60 s bei 20 FPS, `UPDATELEDS` 60 s bei 20 FPS) — Event-Log
+zeigt durchgehend die Baseline-Anzahl an OpenRGB-Fehlereinträgen, keine
+neuen. Stattdessen ein anderes, unkritisches Verhalten: Eine **dauerhafte**
+Verbindung, auf der mehrere LED-Update-Pakete nacheinander gesendet werden,
+wird vom Server nach 1–2 Paketen sauber geschlossen (`recv` liefert 0 Byte —
+geordnetes FIN, kein Absturz, kein RST). Fix: für **jedes** Update-Paket
+(pro Zone, pro Frame) eine frische, kurzlebige TCP-Verbindung
+(Connect → Handshake → ein Paket senden → Close) statt einer einzigen
+dauerhaften Verbindung. Ein voller Zyklus dauert über Loopback < 1 ms
+(gemessen: >20.000 Zyklen in 15 s ohne Fehler) — für 20 FPS mit riesigem
+Puffer ausreichend.
+
+*Architektur:* `ClaudeSignal.ps1` schreibt (REINSTATED aus Update 7, atomar
+per tmp+rename) den aggregierten Zustand nach `state.txt` und startet neben
+dem OpenRGB-Server (jetzt ohne `--device/--mode/--color`, nur noch
+`--server --startminimized`) zusätzlich `SignalAnimator.exe`. Der Animator
+(C#, Ziel .NET Framework 4.0 / `csc.exe`-kompatible Syntax, `/target:winexe`
+— kein Fenster) pollt `state.txt` alle ~200 ms, hält die Controller-/
+Zonen-Struktur gecacht (nur bei Verbindungsverlust neu abgefragt) und
+rendert bei jedem der 20 Frames/s (`Thread.Sleep(50)`) neue Farben pro LED:
+`gray`/`green` konstant; `red` (arbeitet) als blaue Welle (`t/1400 mod 1`
+Phase, Kosinus-Falloff Breite 0,35, plus globaler Atem-Faktor
+`0,75+0,25·sin(t/900)`); `yellow` (wartet) als kräftiges Pulsieren
+(`k=0,5+0,5·sin(t/127)`, Lerp `#3C0000→#E53935`); `yellowbusy` als schnellere
+rote Welle (`t/1000 mod 1`, Basis `#280000`, Spitze `#FF1010`). `state.txt`
+älter als 10 s → `gray` (Overlay beendet/abgestürzt). `config.json` →
+`{"AllRgbDevices": true}` liest der Animator selbst (kein Umweg mehr über
+das Overlay). Logging: `animator.log`, auf ~80 Zeilen begrenzt, bei jedem
+nennenswerten Ereignis (Start, Verbindungsaufbau inkl. erkannter
+LED-Zahl, Zustandswechsel, Fehler, Herzschlag alle 100 Frames) komplett neu
+geschrieben — kein unbegrenztes Wachstum.
+
+`install.sh` pinnt ab sofort OpenRGB **1.0rc3.1** (s.o.) statt des
+Nightly-Builds, per Versions-Marker-Datei im Zielordner (erkennt und
+ersetzt automatisch eine ältere/andere Installation dort) und kompiliert
+`SignalAnimator.cs` mit dem im .NET Framework mitgelieferten `csc.exe`
+(keine neue Abhängigkeit; nicht fatal, falls `csc.exe` fehlt). Die
+`state.txt`-Bereinigung aus Update 8 entfällt — die Datei ist wieder ein
+aktiv genutzter Kommunikationskanal, kein Altlast mehr.

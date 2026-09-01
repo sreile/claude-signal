@@ -12,9 +12,11 @@ try {
     $baseDir     = Join-Path $env:LOCALAPPDATA 'ClaudeSignal'
     $sessionsDir = Join-Path $baseDir 'sessions'
     $configPath  = Join-Path $baseDir 'config.json'
+    $statePath   = Join-Path $baseDir 'state.txt'
     $orgbExe = Join-Path $baseDir 'tools\OpenRGB\OpenRGB Windows 64-bit\OpenRGB.exe'
-    # Geräteumfang: Standard nur Gerät 0 (Tastatur); config.json {"AllRgbDevices": true} färbt ALLE OpenRGB-Geräte
-    $script:orgbDeviceArgs = @('--device','0')
+    $animExe = Join-Path $baseDir 'SignalAnimator.exe'
+    # AllRgbDevices wird nur fürs Config-Roundtrip beim Verschieben gebraucht —
+    # SignalAnimator.exe liest config.json selbst und entscheidet den Geräteumfang.
     $script:allRgb = $false
     New-Item -ItemType Directory -Path $sessionsDir -Force | Out-Null
 
@@ -26,20 +28,17 @@ try {
     # yellowbusy=wartet+Hintergrund arbeitet noch (rot, gleiche Farbe wie yellow)
     $colorMap = @{ gray = '#1050E0'; green = '#43A047'; red = '#2878FF'; yellow = '#E53935'; yellowbusy = '#E53935' }
 
-    # RGB-Backend: OpenRGB, lautlos und ohne Fenster/Effekt-Sandbox (siehe
-    # Update 8 im Spec-Dokument). Persistenter --server haelt die Farbe,
-    # Wegwerf-Client-Aufrufe schalten sie um (auto-verbindet zum laufenden Server).
-    $kbMap = @{ gray = '1050E0'; red = '2878FF'; green = '00B000'; yellow = 'E53935'; yellowbusy = 'FF5A00' }
-    $script:lastKbSent = ''
-    $script:kbProc = $null
-    function Sync-Keyboard([string]$hex) {
+    # RGB-Backend: SignalAnimator.exe (C#, SDK-Streaming über OpenRGB Port 6742)
+    # rendert die Effekte selbst — das Overlay schreibt dafür nur den
+    # aggregierten Zustand in state.txt (siehe Update 10 im Spec-Dokument).
+    function Write-SignalState([string]$color) {
         try {
-            if (-not (Test-Path -LiteralPath $orgbExe)) { return }
-            if ($script:kbProc -and -not $script:kbProc.HasExited) { return }  # ein Client zurzeit — letzter Wunsch gewinnt beim naechsten Tick
-            if ($hex -eq $script:lastKbSent) { return }
-            if (-not (Get-Process -Name OpenRGB -ErrorAction SilentlyContinue)) { return }
-            $script:lastKbSent = $hex
-            $script:kbProc = Start-Process -FilePath $orgbExe -ArgumentList ($script:orgbDeviceArgs + @('--mode','direct','--color',$hex)) -WindowStyle Hidden -PassThru
+            # Atomar schreiben (tmp + Rename): der Animator liest laufend mit —
+            # ein direktes Set-Content könnte er mitten im Schreiben erwischen.
+            $ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            $tmp = $statePath + '.tmp'
+            Set-Content -LiteralPath $tmp -Value ($color + ' ' + $ms) -Encoding Ascii
+            Move-Item -LiteralPath $tmp -Destination $statePath -Force
         } catch { }
     }
 
@@ -104,7 +103,6 @@ try {
                 }
             }
             if ($cfg.AllRgbDevices -eq $true) {
-                $script:orgbDeviceArgs = @()
                 $script:allRgb = $true
             }
         } catch { }
@@ -132,7 +130,7 @@ try {
                 $ellipse.Fill = New-SignalBrush $colorMap[$state.Color]
                 Set-DotPulse $state.Color
             }
-            Sync-Keyboard $kbMap[$state.Color]
+            Write-SignalState $state.Color   # jeden Tick schreiben — gibt dem Animator einen Herzschlag
             if ($state.Color -eq 'gray') {
                 if ($window.IsVisible) { $window.Hide() }   # kein Punkt ohne Session
             } elseif (-not $window.IsVisible) { $window.Show() }
@@ -144,16 +142,21 @@ try {
                 $ellipse.Fill = New-SignalBrush $colorMap['gray']
                 Set-DotPulse 'gray'
             }
-            Sync-Keyboard $kbMap['gray']
+            Write-SignalState 'gray'
             if ($window.IsVisible) { $window.Hide() }
             $ellipse.ToolTip = 'Claude Signal: Statusdateien nicht lesbar'
         }
     })
 
-    # OpenRGB-Server starten, falls nicht schon einer läuft (haelt die Farbe dauerhaft)
+    # OpenRGB-Server UND Animator starten, falls sie nicht schon laufen.
     try {
         if ((Test-Path -LiteralPath $orgbExe) -and -not (Get-Process -Name OpenRGB -ErrorAction SilentlyContinue)) {
-            Start-Process -FilePath $orgbExe -ArgumentList ($script:orgbDeviceArgs + @('--server','--startminimized','--mode','direct','--color',$kbMap['gray'])) -WindowStyle Hidden
+            Start-Process -FilePath $orgbExe -ArgumentList @('--server','--startminimized') -WindowStyle Hidden
+        }
+    } catch { }
+    try {
+        if ((Test-Path -LiteralPath $animExe) -and -not (Get-Process -Name SignalAnimator -ErrorAction SilentlyContinue)) {
+            Start-Process -FilePath $animExe -WindowStyle Hidden
         }
     } catch { }
 
@@ -162,11 +165,7 @@ try {
     $window.Add_Closed({ [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() })
     [System.Windows.Threading.Dispatcher]::Run()
     $timer.Stop()
-    try {
-        if ((Test-Path -LiteralPath $orgbExe) -and (Get-Process -Name OpenRGB -ErrorAction SilentlyContinue)) {
-            Start-Process -FilePath $orgbExe -ArgumentList ($script:orgbDeviceArgs + @('--mode','direct','--color',$kbMap['gray'])) -WindowStyle Hidden
-        }
-    } catch { }
+    Write-SignalState 'gray'   # Animator beim Beenden auf Ruhezustand zurück
 }
 finally {
     $script:mutex.ReleaseMutex()

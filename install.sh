@@ -38,25 +38,65 @@ echo "Overlay-Dateien kopiert nach: $WIN_DIR"
 # OpenRGB bereitstellen (Tastatur/Geräte-Backend, ersetzt SignalRGB komplett —
 # lautlos, kein Fenster/Effekt-Sandbox). Nicht fatal: ohne OpenRGB läuft nur
 # der Bildschirm-Punkt weiter (Guard in ClaudeSignal.ps1 lässt den RGB-Teil aus).
+#
+# WICHTIG: bewusst auf die stabile Version 1.0rc3.1 gepinnt, NICHT auf den
+# "master"-Nightly-Build — der Nightly-Build stürzt beim SDK-Streaming
+# reproduzierbar ab (0xc0000005 in ucrtbase.dll), siehe Update 10 im
+# Spec-Dokument. Ein Versions-Marker sorgt dafür, dass ein zuvor installierter
+# Nightly-Build automatisch durch die gepinnte stabile Version ersetzt wird.
 ORGB_DIR="$WIN_DIR/tools/OpenRGB"
 ORGB_EXE="$ORGB_DIR/OpenRGB Windows 64-bit/OpenRGB.exe"
-if [ -f "$ORGB_EXE" ]; then
-  echo "OpenRGB bereit: $ORGB_EXE"
+ORGB_VERSION="release_candidate_1.0rc3.1"
+ORGB_URL="https://codeberg.org/OpenRGB/OpenRGB/releases/download/release_candidate_1.0rc3.1/OpenRGB_1.0rc3.1_Windows_64_5e81e26.zip"
+ORGB_VERSION_FILE="$ORGB_DIR/.claude-signal-version"
+
+orgb_up_to_date=0
+if [ -f "$ORGB_EXE" ] && [ -f "$ORGB_VERSION_FILE" ] && [ "$(cat "$ORGB_VERSION_FILE" 2>/dev/null)" = "$ORGB_VERSION" ]; then
+  orgb_up_to_date=1
+fi
+
+if [ "$orgb_up_to_date" = 1 ]; then
+  echo "OpenRGB bereit (gepinnt $ORGB_VERSION): $ORGB_EXE"
 else
   mkdir -p "$WIN_DIR/tools"
-  if curl -sL -o "$WIN_DIR/tools/openrgb.zip" \
-       'https://gitlab.com/CalcProgrammer1/OpenRGB/-/jobs/artifacts/master/download?job=Windows%2064' \
+  rm -rf "$ORGB_DIR"   # alten Nightly-/Vorgänger-Build restlos entfernen
+  mkdir -p "$ORGB_DIR"
+  if curl -sL -o "$WIN_DIR/tools/openrgb.zip" "$ORGB_URL" \
      && python3 -c '
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as z:
     z.extractall(sys.argv[2])
 ' "$WIN_DIR/tools/openrgb.zip" "$ORGB_DIR" \
      && [ -f "$ORGB_EXE" ]; then
-    echo "OpenRGB bereit: $ORGB_EXE"
+    echo "$ORGB_VERSION" > "$ORGB_VERSION_FILE"
+    echo "OpenRGB bereit (gepinnt $ORGB_VERSION): $ORGB_EXE"
   else
     echo "WARNUNG: OpenRGB konnte nicht heruntergeladen/entpackt werden — Geräte-Kopplung bleibt inaktiv, der Rest der Installation läuft normal weiter."
   fi
   rm -f "$WIN_DIR/tools/openrgb.zip"
+fi
+
+# SignalAnimator kompilieren (C#, SDK-Streaming über OpenRGB Port 6742).
+# csc.exe kommt mit jedem .NET Framework mit — keine zusätzliche Abhängigkeit.
+CSC="/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+[ -f "$CSC" ] || CSC="/mnt/c/Windows/Microsoft.NET/Framework/v4.0.30319/csc.exe"
+if [ -f "$CSC" ]; then
+  cp "$SRC/SignalAnimator.cs" "$WIN_DIR/"
+  if ( cd /mnt/c && "$CSC" /nologo /target:winexe \
+         /out:"$(wslpath -w "$WIN_DIR/SignalAnimator.exe")" \
+         "$(wslpath -w "$WIN_DIR/SignalAnimator.cs")" ); then
+    echo "Animator kompiliert: $WIN_DIR/SignalAnimator.exe"
+    ANIM_RUNNING="$("$PSEXE" -NoProfile -Command \
+      "if (Get-Process -Name SignalAnimator -ErrorAction SilentlyContinue) { Write-Output yes } else { Write-Output no }" \
+      | tr -d '\r')"
+    if [ "$ANIM_RUNNING" = "yes" ]; then
+      echo "HINWEIS: SignalAnimator läuft noch mit der vorherigen Version — für die neue Datei einmal manuell neu starten (Stop-Process -Name SignalAnimator; das Overlay startet ihn danach automatisch neu)."
+    fi
+  else
+    echo "WARNUNG: SignalAnimator-Kompilierung fehlgeschlagen — Animationen deaktiviert (nur Overlay-Punkt)."
+  fi
+else
+  echo "WARNUNG: csc.exe nicht gefunden — Animationen deaktiviert (nur Overlay-Punkt)."
 fi
 
 # signal.env schreiben — report-status.sh liest daraus zur Laufzeit, statt
@@ -80,7 +120,7 @@ if [ -d "$EFF_DST" ]; then
     fi
   done
 fi
-for obsolete in "testsrv.ps1" "state.txt"; do
+for obsolete in "testsrv.ps1"; do
   if [ -f "$WIN_DIR/$obsolete" ]; then
     rm -f "$WIN_DIR/$obsolete"
     echo "Veraltete Datei entfernt: $WIN_DIR/$obsolete"
