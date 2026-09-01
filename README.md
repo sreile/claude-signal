@@ -27,7 +27,12 @@ nur von der Hauptkette selbst aufgelöst (siehe Update 3 im Spec-Dokument).
 Beim Absenden einer Antwort springt die Anzeige sofort auf „arbeitet"
 (PostToolUse-Hook) — gilt ab der nächsten neuen Session.
 
-### Tastatur (Turtle Beach Vulcan II via SignalRGB)
+### RGB-Geräte (via SignalRGB)
+
+Die Kopplung funktioniert mit **jedem Gerät, das SignalRGB unterstützt** —
+Tastaturen, Mäuse, LED-Strips, Lüfter: alle angeschlossenen Geräte wechseln
+gemeinsam die Farbe. Getestet mit einer Turtle Beach Vulcan II (die eine
+Eigenheit hat, siehe Betriebsvoraussetzungen).
 
 | Zustand | Optik |
 |---|---|
@@ -129,10 +134,12 @@ Danach:
 
 ## Betriebsvoraussetzungen
 
-1. **Tastatur muss auf Onboard-Profil 1 stehen** (`FN+F1`). Nur auf Profil 1
-   gibt die Firmware die LED-Kontrolle an Software frei — auf Profil 2–4
-   ignoriert sie Beleuchtungs-Befehle stumm (heute empirisch ermittelt, kein
-   Fehler, keine Meldung, einfach nichts).
+1. **Nur bei der Turtle Beach Vulcan II:** Die Tastatur muss auf
+   Onboard-Profil 1 stehen (`FN+F1`). Nur auf Profil 1 gibt deren Firmware die
+   LED-Kontrolle an Software frei — auf Profil 2–4 ignoriert sie
+   Beleuchtungs-Befehle stumm (empirisch ermittelt, kein Fehler, keine
+   Meldung, einfach nichts). Andere Geräte brauchen keinen solchen Trick —
+   alles, was SignalRGB steuern kann, funktioniert direkt.
 2. **SignalRGB muss laufen.** Empfehlung: in SignalRGB unter Einstellungen →
    „Bei der Anmeldung starten" aktivieren (steht standardmäßig auf AUS).
 3. **Turtle Beach Swarm II darf nicht parallel laufen** — beide Tools kämpfen
@@ -227,6 +234,7 @@ der Aggregation ignoriert (gelten als stale). Statusdateien, die älter als
   sind außerhalb des Umfangs.
 - Die `PreToolUse`- und `PostToolUse`-Hooks kosten pro Tool-Aufruf ein paar
   Millisekunden zusätzlich.
-- Das Tastatur-Schema greift nur bei dieser konkreten Konstellation: Turtle
-  Beach Vulcan II + SignalRGB. OpenRGB wurde probiert, scheiterte aber an der
-  Firmware-Revision dieser Tastatur (`10F5:501B`) — siehe Repo-Verlauf.
+- Die Geräte-Kopplung setzt SignalRGB voraus; sie funktioniert mit jedem dort
+  unterstützten Gerät. OpenRGB wurde als schlankere Alternative probiert,
+  scheiterte aber an der Firmware-Revision der Test-Tastatur (Turtle Beach
+  Vulcan II, `10F5:501B`) — siehe Repo-Verlauf.
