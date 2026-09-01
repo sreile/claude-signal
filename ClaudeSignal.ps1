@@ -9,6 +9,10 @@ if (-not $script:mutex.WaitOne(0)) { exit 0 }
 try {
     Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
+    Add-Type -Namespace ClaudeSignal -Name Win32 -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+'@
+
     $baseDir     = Join-Path $env:LOCALAPPDATA 'ClaudeSignal'
     $sessionsDir = Join-Path $baseDir 'sessions'
     $configPath  = Join-Path $baseDir 'config.json'
@@ -24,12 +28,29 @@ try {
 
     # Tastatur-Backend: Farbwechsel -> SignalRGB-Effekt (Spec-Erweiterung Tastatur-Backend)
     $sigMap = @{ gray = 'Claude Blau'; green = 'Claude Gruen'; red = 'Claude Blau Puls'; yellow = 'Claude Rot Puls'; yellowbusy = 'Claude Rot Lauf' }
+    $script:sigHideTimer = $null
     function Invoke-SignalKeyboard([string]$color) {
         try {
             if (-not $sigMap.ContainsKey($color)) { return }
-            # Nur wenn SignalRGB schon laeuft — sonst wuerde der Protokoll-Handler es starten
-            if (Get-Process -Name SignalRgb -ErrorAction SilentlyContinue) {
-                Start-Process ('signalrgb://effect/apply/' + [uri]::EscapeDataString($sigMap[$color]))
+            $sig = Get-Process -Name SignalRgb -ErrorAction SilentlyContinue
+            if (-not $sig) { return }
+            $hadWindow = ($sig.MainWindowHandle -ne [IntPtr]::Zero)
+            Start-Process ('signalrgb://effect/apply/' + [uri]::EscapeDataString($sigMap[$color]))
+            if (-not $hadWindow) {
+                # Deep-Link kann das SignalRGB-Fenster ungefragt hochholen — dann gleich wieder verstecken
+                if ($script:sigHideTimer) { $script:sigHideTimer.Stop() }
+                $script:sigHideTimer = New-Object System.Windows.Threading.DispatcherTimer
+                $script:sigHideTimer.Interval = [TimeSpan]::FromMilliseconds(600)
+                $script:sigHideTimer.Add_Tick({
+                    try {
+                        $script:sigHideTimer.Stop()
+                        $p = Get-Process -Name SignalRgb -ErrorAction SilentlyContinue
+                        if ($p -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
+                            [ClaudeSignal.Win32]::ShowWindowAsync($p.MainWindowHandle, 0) | Out-Null  # SW_HIDE
+                        }
+                    } catch { }
+                })
+                $script:sigHideTimer.Start()
             }
         } catch { }
     }
