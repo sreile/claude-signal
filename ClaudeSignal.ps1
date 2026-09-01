@@ -29,15 +29,17 @@ try {
     # RGB-Backend: OpenRGB, lautlos und ohne Fenster/Effekt-Sandbox (siehe
     # Update 8 im Spec-Dokument). Persistenter --server haelt die Farbe,
     # Wegwerf-Client-Aufrufe schalten sie um (auto-verbindet zum laufenden Server).
-    $kbMap = @{ gray = '1050E0'; red = '2878FF'; green = '00B000'; yellow = 'E53935'; yellowbusy = 'E53935' }
+    $kbMap = @{ gray = '1050E0'; red = '2878FF'; green = '00B000'; yellow = 'E53935'; yellowbusy = 'FF5A00' }
     $script:lastKbSent = ''
-    function Set-KeyboardColor([string]$hex) {
+    $script:kbProc = $null
+    function Sync-Keyboard([string]$hex) {
         try {
-            if ($hex -eq $script:lastKbSent) { return }
             if (-not (Test-Path -LiteralPath $orgbExe)) { return }
+            if ($script:kbProc -and -not $script:kbProc.HasExited) { return }  # ein Client zurzeit — letzter Wunsch gewinnt beim naechsten Tick
+            if ($hex -eq $script:lastKbSent) { return }
             if (-not (Get-Process -Name OpenRGB -ErrorAction SilentlyContinue)) { return }
             $script:lastKbSent = $hex
-            Start-Process -FilePath $orgbExe -ArgumentList ($script:orgbDeviceArgs + @('--mode','direct','--color',$hex)) -WindowStyle Hidden
+            $script:kbProc = Start-Process -FilePath $orgbExe -ArgumentList ($script:orgbDeviceArgs + @('--mode','direct','--color',$hex)) -WindowStyle Hidden -PassThru
         } catch { }
     }
 
@@ -120,7 +122,6 @@ try {
 
     # --- Poll-Timer: 500 ms ---
     $script:lastColor = ''
-    $script:tickCount = 0
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(500)
     $timer.Add_Tick({
@@ -131,14 +132,7 @@ try {
                 $ellipse.Fill = New-SignalBrush $colorMap[$state.Color]
                 Set-DotPulse $state.Color
             }
-            $script:tickCount++
-            $kbTarget = $kbMap[$state.Color]
-            if ($state.Color -eq 'yellow') {
-                if (($script:tickCount % 4) -ge 2) { $kbTarget = '3A0000' }   # ~1 s Blinken
-            } elseif ($state.Color -eq 'yellowbusy') {
-                if (($script:tickCount % 2) -eq 1) { $kbTarget = '3A0000' }   # ~0,5 s schnelles Blinken
-            }
-            Set-KeyboardColor $kbTarget
+            Sync-Keyboard $kbMap[$state.Color]
             if ($state.Color -eq 'gray') {
                 if ($window.IsVisible) { $window.Hide() }   # kein Punkt ohne Session
             } elseif (-not $window.IsVisible) { $window.Show() }
@@ -150,7 +144,7 @@ try {
                 $ellipse.Fill = New-SignalBrush $colorMap['gray']
                 Set-DotPulse 'gray'
             }
-            Set-KeyboardColor $kbMap['gray']
+            Sync-Keyboard $kbMap['gray']
             if ($window.IsVisible) { $window.Hide() }
             $ellipse.ToolTip = 'Claude Signal: Statusdateien nicht lesbar'
         }
@@ -168,8 +162,11 @@ try {
     $window.Add_Closed({ [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() })
     [System.Windows.Threading.Dispatcher]::Run()
     $timer.Stop()
-    $script:lastKbSent = ''
-    Set-KeyboardColor $kbMap['gray']   # Tastatur beim Beenden auf Ruhezustand zurück
+    try {
+        if ((Test-Path -LiteralPath $orgbExe) -and (Get-Process -Name OpenRGB -ErrorAction SilentlyContinue)) {
+            Start-Process -FilePath $orgbExe -ArgumentList ($script:orgbDeviceArgs + @('--mode','direct','--color',$kbMap['gray'])) -WindowStyle Hidden
+        }
+    } catch { }
 }
 finally {
     $script:mutex.ReleaseMutex()

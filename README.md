@@ -32,26 +32,26 @@ Beim Absenden einer Antwort springt die Anzeige sofort auf „arbeitet"
 Die Kopplung läuft komplett lautlos über [OpenRGB](https://openrgb.org/) —
 kein Fenster, kein Effektwechsel, keine Sandbox-Beschränkungen. Ein
 persistenter `OpenRGB.exe --server`-Prozess läuft im Hintergrund und hält die
-zuletzt gesetzte Farbe; das Overlay schickt bei jedem Zustandswechsel (bzw.
-beim Blinken alle 500 ms) einen kurzen Wegwerf-Aufruf
-(`OpenRGB.exe --device 0 --mode direct --color …`), der sich automatisch mit
-dem laufenden Server verbindet und die Farbe umschaltet.
+zuletzt gesetzte Farbe; das Overlay schickt bei jedem Zustandswechsel einen
+kurzen Wegwerf-Aufruf (`OpenRGB.exe --device 0 --mode direct --color …`), der
+sich automatisch mit dem laufenden Server verbindet und die Farbe umschaltet.
+Pro Zeitpunkt läuft höchstens ein solcher Aufruf — ist noch einer aktiv,
+gewinnt beim nächsten Tick einfach der dann aktuelle Zustand (kein Aufstauen
+paralleler Prozesse).
 
 | Zustand | Optik |
 |---|---|
 | Keine Session | Ruhiges Blau, konstant |
 | Arbeitet | Helleres Blau, konstant |
-| Wartet auf dich | Rot, blinkt ca. 1×/Sekunde |
-| Wartet auf dich, Hintergrund arbeitet noch | Rot, blinkt schneller (ca. 2×/Sekunde) |
+| Wartet auf dich | Rot, konstant |
+| Wartet auf dich, Hintergrund arbeitet noch | Orange, konstant |
 | Fertig | Grün, konstant |
 
-**Wellen-/Puls-Animationen gibt es in v4 nicht mehr:** OpenRGBs
-Kommandozeile kann nur einzelne Farben setzen, keine Lauf- oder Atem-Effekte.
-Statt sanftem Pulsieren blinkt die Tastatur beim Warten zwischen der
-Zustandsfarbe und einem sehr dunklen Rot. Bewusster Trade-off zugunsten von
-Lautlosigkeit (kein Fenster, kein Deep-Link, keine Effekt-Sandbox) —
-weichere Animationen wären über OpenRGBs SDK-Streaming-Protokoll möglich,
-sind aber (noch) nicht umgesetzt.
+Farbwechsel brauchen wegen der OpenRGB-Client-Latenz (jeder Aufruf lebt
+gemessen ca. 2 Sekunden) einen kurzen Moment. Puls-/Wellenanimationen auf der
+Tastatur — wie es sie bis v4.0 kurzzeitig als Blinken gab — sind als späterer
+Ausbau über OpenRGBs SDK-Streaming-Protokoll vorgesehen; der Bildschirm-Punkt
+pulsiert währenddessen weiterhin ganz normal weiter.
 
 **Profil 1 ist Pflicht (Turtle Beach Vulcan II):** Die Tastatur muss auf
 Onboard-**Profil 1** stehen (`FN+F1`). Das ist die entscheidende, selbst
@@ -90,11 +90,12 @@ einmalig zur Installationszeit (per PowerShell + `wslpath`) und hinterlegt ihn
 in `signal.env` neben den Skripten; `report-status.sh` liest diese Datei bei
 jedem Aufruf. `ClaudeSignal.ps1` (WPF, Polling alle 500 ms) liest die
 Statusdateien, aggregiert sie nach der Prioritätsregel oben, färbt den Punkt —
-und schickt bei jedem Zustandswechsel (bzw. beim Blinken) einen kurzen
-`OpenRGB.exe`-Kommandozeilenaufruf, der die zuvor per `--server` gestartete
-OpenRGB-Instanz auf die neue Farbe umschaltet. Kein Effektwechsel, kein
-Deep-Link, kein Fenster — die frühere SignalRGB-Lösung ist komplett ersetzt
-(siehe Update 8 im Spec-Dokument).
+und schickt bei jedem Zustandswechsel einen kurzen `OpenRGB.exe`-
+Kommandozeilenaufruf, der die zuvor per `--server` gestartete OpenRGB-Instanz
+auf die neue Farbe umschaltet — höchstens einen gleichzeitig (Serialisierung,
+siehe Update 9). Kein Effektwechsel, kein Deep-Link, kein Fenster — die
+frühere SignalRGB-Lösung ist komplett ersetzt (siehe Update 8 im
+Spec-Dokument).
 
 ```
 Claude Code Hooks (WSL)                Windows
@@ -107,7 +108,7 @@ Claude Code Hooks (WSL)                Windows
                                       │ ClaudeSignal.ps1 (WPF)      │
                                       │ aggregiert → färbt Punkt    │
                                       └──────────────┬──────────────┘
-                                        Farbwechsel / Blinken (500 ms)
+                                        Farbwechsel (max. 1 Aufruf gleichzeitig)
                                       ┌──────────────▼──────────────┐
                                       │ OpenRGB.exe --device 0      │
                                       │  --mode direct --color …    │
@@ -299,8 +300,11 @@ der Aggregation ignoriert (gelten als stale). Statusdateien, die älter als
 - Die `PreToolUse`- und `PostToolUse`-Hooks kosten pro Tool-Aufruf ein paar
   Millisekunden zusätzlich.
 - Keine Wellen-/Puls-Animationen mehr auf der Tastatur — OpenRGBs
-  Kommandozeile kann nur Farben setzen, „wartet" zeigt sich daher als
-  Blinken statt als weicher Puls (siehe RGB-Geräte-Abschnitt oben).
+  Kommandozeile kann nur einzelne Farben setzen, jeder Zustand zeigt sich
+  daher als konstante Farbe statt als weicher Puls (siehe RGB-Geräte-Abschnitt
+  oben). Auch ein anfänglicher Blink-Ansatz wurde wieder verworfen: gemessen
+  ~2 s Laufzeit pro OpenRGB-Client-Aufruf hätten bei 2 Hz Blinkfrequenz
+  Prozesse gestaut.
 - Die Geräte-Kopplung setzt OpenRGB voraus und funktioniert mit jedem dort
   unterstützten Gerät. Frühere Fehlversuche mit OpenRGB lagen am aktiven
   Tastatur-Profil (4 statt 1), nicht an OpenRGB selbst — siehe Repo-Verlauf.

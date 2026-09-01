@@ -236,3 +236,16 @@ Geräte-Kopplung bleibt inaktiv). Beim Deploy werden zusätzlich alle
 Effektdateien aus `Documents\WhirlwindFX\Effects` sowie veraltete
 v3-Artefakte (`testsrv.ps1`, `state.txt` im Deploy-Ordner) entfernt, falls
 vorhanden.
+
+**Update 9 (2026-09-01):** v4.1-Hotfix. Gemessen: ein OpenRGB-Client-Aufruf
+lebt ca. 2,1 s — das 2-Hz-Blinken aus Update 8 (`yellowbusy`) spawnte damit
+bis zu 11 gleichzeitige OpenRGB-Prozesse. Fix: Serialisierung auf maximal
+einen In-Flight-Client (`$script:kbProc`, per `-PassThru`/`HasExited`
+geprüft) — `Sync-Keyboard` (vormals `Set-KeyboardColor`) wird jetzt jeden
+Tick mit der aktuell gewünschten Farbe aufgerufen; läuft noch ein Client,
+verfällt der Wunsch einfach und der nächste Tick versucht es erneut
+(„latest wins"). Blinken komplett entfernt, stattdessen statische Farben:
+`yellowbusy` bekommt eine eigene Farbe (Orange `FF5A00`) statt geteiltem Rot
+mit `yellow`, um beide Zustände weiterhin unterscheidbar zu halten. Der
+Shutdown-Handback erzwingt die Ruhefarbe unabhängig von Busy-/Dedupe-Guard
+(direkter `Start-Process`-Aufruf statt `Sync-Keyboard`).
