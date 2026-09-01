@@ -12,7 +12,10 @@ try {
     $baseDir     = Join-Path $env:LOCALAPPDATA 'ClaudeSignal'
     $sessionsDir = Join-Path $baseDir 'sessions'
     $configPath  = Join-Path $baseDir 'config.json'
-    $statePath   = Join-Path $baseDir 'state.txt'
+    $orgbExe = Join-Path $baseDir 'tools\OpenRGB\OpenRGB Windows 64-bit\OpenRGB.exe'
+    # Geräteumfang: Standard nur Gerät 0 (Tastatur); config.json {"AllRgbDevices": true} färbt ALLE OpenRGB-Geräte
+    $script:orgbDeviceArgs = @('--device','0')
+    $script:allRgb = $false
     New-Item -ItemType Directory -Path $sessionsDir -Force | Out-Null
 
     # Logik neben dem Skript laden (funktioniert deployt UND direkt aus dem Repo/UNC)
@@ -23,13 +26,18 @@ try {
     # yellowbusy=wartet+Hintergrund arbeitet noch (rot, gleiche Farbe wie yellow)
     $colorMap = @{ gray = '#1050E0'; green = '#43A047'; red = '#2878FF'; yellow = '#E53935'; yellowbusy = '#E53935' }
 
-    # RGB-Backend: schreibt den Zustand in state.txt; der dauerhaft installierte
-    # SignalRGB-Effekt "Claude Signal" pollt diese Datei selbst per rAF-Loop
-    # (kein Effektwechsel/Deep-Link mehr — siehe Update 7 im Spec-Dokument)
-    function Write-SignalState([string]$color) {
+    # RGB-Backend: OpenRGB, lautlos und ohne Fenster/Effekt-Sandbox (siehe
+    # Update 8 im Spec-Dokument). Persistenter --server haelt die Farbe,
+    # Wegwerf-Client-Aufrufe schalten sie um (auto-verbindet zum laufenden Server).
+    $kbMap = @{ gray = '1050E0'; red = '2878FF'; green = '00B000'; yellow = 'E53935'; yellowbusy = 'E53935' }
+    $script:lastKbSent = ''
+    function Set-KeyboardColor([string]$hex) {
         try {
-            $ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-            Set-Content -LiteralPath $statePath -Value ($color + ' ' + $ms) -Encoding Ascii
+            if ($hex -eq $script:lastKbSent) { return }
+            if (-not (Test-Path -LiteralPath $orgbExe)) { return }
+            if (-not (Get-Process -Name OpenRGB -ErrorAction SilentlyContinue)) { return }
+            $script:lastKbSent = $hex
+            Start-Process -FilePath $orgbExe -ArgumentList ($script:orgbDeviceArgs + @('--mode','direct','--color',$hex)) -WindowStyle Hidden
         } catch { }
     }
 
@@ -93,6 +101,10 @@ try {
                     $window.Left = $left; $window.Top = $top
                 }
             }
+            if ($cfg.AllRgbDevices -eq $true) {
+                $script:orgbDeviceArgs = @()
+                $script:allRgb = $true
+            }
         } catch { }
     }
 
@@ -100,7 +112,7 @@ try {
     $window.Add_MouseLeftButtonDown({
         try {
             $window.DragMove()  # blockiert bis zum Loslassen
-            @{ Left = $window.Left; Top = $window.Top } | ConvertTo-Json |
+            @{ Left = $window.Left; Top = $window.Top; AllRgbDevices = $script:allRgb } | ConvertTo-Json |
                 Set-Content -LiteralPath $configPath -Encoding Ascii
         } catch { }
     })
@@ -108,6 +120,7 @@ try {
 
     # --- Poll-Timer: 500 ms ---
     $script:lastColor = ''
+    $script:tickCount = 0
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(500)
     $timer.Add_Tick({
@@ -118,7 +131,14 @@ try {
                 $ellipse.Fill = New-SignalBrush $colorMap[$state.Color]
                 Set-DotPulse $state.Color
             }
-            Write-SignalState $state.Color   # jeden Tick schreiben — gibt dem Effekt einen Herzschlag
+            $script:tickCount++
+            $kbTarget = $kbMap[$state.Color]
+            if ($state.Color -eq 'yellow') {
+                if (($script:tickCount % 4) -ge 2) { $kbTarget = '3A0000' }   # ~1 s Blinken
+            } elseif ($state.Color -eq 'yellowbusy') {
+                if (($script:tickCount % 2) -eq 1) { $kbTarget = '3A0000' }   # ~0,5 s schnelles Blinken
+            }
+            Set-KeyboardColor $kbTarget
             if ($state.Color -eq 'gray') {
                 if ($window.IsVisible) { $window.Hide() }   # kein Punkt ohne Session
             } elseif (-not $window.IsVisible) { $window.Show() }
@@ -130,17 +150,26 @@ try {
                 $ellipse.Fill = New-SignalBrush $colorMap['gray']
                 Set-DotPulse 'gray'
             }
-            Write-SignalState 'gray'
+            Set-KeyboardColor $kbMap['gray']
             if ($window.IsVisible) { $window.Hide() }
             $ellipse.ToolTip = 'Claude Signal: Statusdateien nicht lesbar'
         }
     })
+
+    # OpenRGB-Server starten, falls nicht schon einer läuft (haelt die Farbe dauerhaft)
+    try {
+        if ((Test-Path -LiteralPath $orgbExe) -and -not (Get-Process -Name OpenRGB -ErrorAction SilentlyContinue)) {
+            Start-Process -FilePath $orgbExe -ArgumentList ($script:orgbDeviceArgs + @('--server','--startminimized','--mode','direct','--color',$kbMap['gray'])) -WindowStyle Hidden
+        }
+    } catch { }
+
     $timer.Start()
     # Kein initiales Show: der erste Tick blendet den Punkt nur ein, wenn eine Session existiert.
     $window.Add_Closed({ [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() })
     [System.Windows.Threading.Dispatcher]::Run()
     $timer.Stop()
-    Write-SignalState 'gray'   # Effekt beim Beenden auf Ruhezustand zurück
+    $script:lastKbSent = ''
+    Set-KeyboardColor $kbMap['gray']   # Tastatur beim Beenden auf Ruhezustand zurück
 }
 finally {
     $script:mutex.ReleaseMutex()

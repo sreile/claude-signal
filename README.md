@@ -27,35 +27,57 @@ nur von der Hauptkette selbst aufgelöst (siehe Update 3 im Spec-Dokument).
 Beim Absenden einer Antwort springt die Anzeige sofort auf „arbeitet"
 (PostToolUse-Hook) — gilt ab der nächsten neuen Session.
 
-### RGB-Geräte (via SignalRGB)
+### RGB-Geräte (via OpenRGB)
 
-Die Kopplung funktioniert mit **jedem Gerät, das SignalRGB unterstützt** —
-Tastaturen, Mäuse, LED-Strips, Lüfter: alle angeschlossenen Geräte wechseln
-gemeinsam die Farbe. Getestet mit einer Turtle Beach Vulcan II (die eine
-Eigenheit hat, siehe Betriebsvoraussetzungen).
-
-Ein einziger, dauerhaft installierter Effekt namens **„Claude Signal"** zeigt
-den Status — er liest die Statusdatei selbst (mehrmals pro Sekunde) und
-zeichnet sich entsprechend um. Es gibt keinen Effektwechsel mehr, der
-SignalRGB ins Vordergrundfenster holen könnte.
+Die Kopplung läuft komplett lautlos über [OpenRGB](https://openrgb.org/) —
+kein Fenster, kein Effektwechsel, keine Sandbox-Beschränkungen. Ein
+persistenter `OpenRGB.exe --server`-Prozess läuft im Hintergrund und hält die
+zuletzt gesetzte Farbe; das Overlay schickt bei jedem Zustandswechsel (bzw.
+beim Blinken alle 500 ms) einen kurzen Wegwerf-Aufruf
+(`OpenRGB.exe --device 0 --mode direct --color …`), der sich automatisch mit
+dem laufenden Server verbindet und die Farbe umschaltet.
 
 | Zustand | Optik |
 |---|---|
 | Keine Session | Ruhiges Blau, konstant |
-| Arbeitet | Blau mit Lauf-/Atemeffekt |
-| Wartet auf dich | Rot, kräftig pulsierend |
-| Wartet auf dich, Hintergrund arbeitet noch | Rot, laufend (schnell) |
+| Arbeitet | Helleres Blau, konstant |
+| Wartet auf dich | Rot, blinkt ca. 1×/Sekunde |
+| Wartet auf dich, Hintergrund arbeitet noch | Rot, blinkt schneller (ca. 2×/Sekunde) |
 | Fertig | Grün, konstant |
 
-Puls vs. Laufen: Pulsieren heißt reines Warten — nichts läuft mehr nebenher.
-Laufen (eine schnellere Welle) heißt zusätzlich, dass im Hintergrund noch ein
-Agent aktiv ist, während du gefragt wirst.
+**Wellen-/Puls-Animationen gibt es in v4 nicht mehr:** OpenRGBs
+Kommandozeile kann nur einzelne Farben setzen, keine Lauf- oder Atem-Effekte.
+Statt sanftem Pulsieren blinkt die Tastatur beim Warten zwischen der
+Zustandsfarbe und einem sehr dunklen Rot. Bewusster Trade-off zugunsten von
+Lautlosigkeit (kein Fenster, kein Deep-Link, keine Effekt-Sandbox) —
+weichere Animationen wären über OpenRGBs SDK-Streaming-Protokoll möglich,
+sind aber (noch) nicht umgesetzt.
 
-**Einmalig aktivieren:** In SignalRGB unter Bibliothek/Effekte „Claude
-Signal" auswählen. Alternativ genügt einmalig der Link
-`signalrgb://effect/apply/Claude%20Signal`. Danach läuft alles automatisch —
-du kannst jederzeit zu einem anderen SignalRGB-Effekt wechseln und später
-ganz normal über SignalRGB wieder zurück zu „Claude Signal".
+**Profil 1 ist Pflicht (Turtle Beach Vulcan II):** Die Tastatur muss auf
+Onboard-**Profil 1** stehen (`FN+F1`). Das ist die entscheidende, selbst
+herausgefundene Erkenntnis, die OpenRGB überhaupt erst funktionieren ließ —
+auf Profil 2–4 gibt die Firmware die LED-Kontrolle nicht an Software ab.
+Frühere Fehlversuche mit OpenRGB scheiterten daran (plus an Testläufen gegen
+eine zwischenzeitlich gelöschte Programmdatei) — nicht an OpenRGB selbst.
+
+**Alle Geräte statt nur der Tastatur:** Standardmäßig steuert das Overlay nur
+Gerät 0 (die Tastatur). Um wirklich **alle** von OpenRGB erkannten Geräte
+mitfärben zu lassen (Lüfter, AIO-Kühler, RAM-Module, …), lege eine
+`config.json` im Deploy-Ordner an
+(`<LOCALAPPDATA>\ClaudeSignal\config.json`, Inhalt `{"AllRgbDevices": true}`)
+— beim nächsten Verschieben des Punkts schreibt das Overlay diese Einstellung
+zusammen mit der Position automatisch fort. Hinweis: Mainboard-/RAM-RGB über
+OpenRGB braucht meist zusätzlich den PawnIO-Treiber und einmalig
+Admin-Rechte bei der Ersteinrichtung; USB-Lüfter-Hubs in der Regel nicht.
+
+**SignalRGB: nicht mehr benötigt.** Frühere Versionen nutzten SignalRGB samt
+Deep-Links bzw. einem selbst-pollenden Effekt — beides erwies sich als
+unzuverlässig (Fenster poppt ungefragt hoch bzw. die Effekt-Sandbox blockiert
+Datei-/HTTP-Zugriffe komplett). SignalRGB wird jetzt nicht mehr gebraucht:
+Der Autostart-Dienst kann auf „Manuell" gestellt werden, optional lässt sich
+SignalRGB komplett deinstallieren (`winget uninstall WhirlwindFX.SignalRgb`).
+**Wichtig:** SignalRGB darf **niemals** parallel zu OpenRGB laufen — beide
+kämpfen um dieselbe Gerätekontrolle.
 
 ## Architektur
 
@@ -68,14 +90,11 @@ einmalig zur Installationszeit (per PowerShell + `wslpath`) und hinterlegt ihn
 in `signal.env` neben den Skripten; `report-status.sh` liest diese Datei bei
 jedem Aufruf. `ClaudeSignal.ps1` (WPF, Polling alle 500 ms) liest die
 Statusdateien, aggregiert sie nach der Prioritätsregel oben, färbt den Punkt —
-und schreibt den aktuellen Zustand zusätzlich in `state.txt` (Format
-`<zustand> <epochMs>`). Der dauerhaft installierte SignalRGB-Effekt „Claude
-Signal" liest diese Datei selbständig mehrmals pro Sekunde
-(`requestAnimationFrame`-Loop — `setInterval` wird von SignalRGBs Renderer
-gedrosselt) und rendert seinen Zustand direkt; das Overlay muss dazu keinen
-Effektwechsel mehr anstoßen (die frühere Deep-Link-Lösung holte SignalRGBs
-Fenster gelegentlich ungefragt in den Vordergrund, siehe Update 6/7 im
-Spec-Dokument).
+und schickt bei jedem Zustandswechsel (bzw. beim Blinken) einen kurzen
+`OpenRGB.exe`-Kommandozeilenaufruf, der die zuvor per `--server` gestartete
+OpenRGB-Instanz auf die neue Farbe umschaltet. Kein Effektwechsel, kein
+Deep-Link, kein Fenster — die frühere SignalRGB-Lösung ist komplett ersetzt
+(siehe Update 8 im Spec-Dokument).
 
 ```
 Claude Code Hooks (WSL)                Windows
@@ -88,17 +107,19 @@ Claude Code Hooks (WSL)                Windows
                                       │ ClaudeSignal.ps1 (WPF)      │
                                       │ aggregiert → färbt Punkt    │
                                       └──────────────┬──────────────┘
-                                          schreibt bei jedem Tick
+                                        Farbwechsel / Blinken (500 ms)
                                       ┌──────────────▼──────────────┐
-                                      │ state.txt (<Zustand> <ms>)  │
+                                      │ OpenRGB.exe --device 0      │
+                                      │  --mode direct --color …    │
+                                      │ (Wegwerf-Client-Aufruf)     │
                                       └──────────────┬──────────────┘
-                                        liest sich selbst, alle ~600 ms
+                                          verbindet sich automatisch zu
                                       ┌──────────────▼──────────────┐
-                                      │ SignalRGB-Effekt            │
-                                      │ „Claude Signal" (rAF-Loop)  │
+                                      │ OpenRGB.exe --server        │
+                                      │ (persistent, hält die Farbe)│
                                       └──────────────┬──────────────┘
                                                       ▼
-                                      SignalRGB → angeschlossene Geräte
+                                      angeschlossene RGB-Geräte
 ```
 
 ## Installation
@@ -113,10 +134,13 @@ Dokumente-Verzeichnis (per PowerShell + `wslpath`) und hinterlegt sie in
 `signal.env` neben den Skripten — keine hartkodierten Benutzerpfade. Legt bei
 Bedarf ein Backup von `~/.claude/settings.json` an, trägt fehlende Hooks nach
 (und entfernt dabei veraltete Hook-Einträge, die noch auf einen älteren
-Installationsort zeigen), deployt das Overlay sowie den SignalRGB-Effekt
-„Claude Signal" nach Windows (generiert aus einer Vorlage mit dem echten
-`state.txt`-Pfad) und entfernt dabei die fünf alten Einzel-Effekte, falls sie
-noch von einer älteren Installation vorhanden sind.
+Installationsort zeigen), deployt das Overlay und lädt bei Bedarf OpenRGB
+automatisch herunter (Windows-Build, entpackt nach
+`<LOCALAPPDATA>\ClaudeSignal\tools\OpenRGB\`; schlägt der Download fehl,
+ist das nicht fatal — die Installation läuft durch, nur die Geräte-Kopplung
+bleibt dann inaktiv). Räumt außerdem alle Effektdateien früherer Versionen
+aus `Documents\WhirlwindFX\Effects` sowie veraltete v3-Artefakte auf, falls
+noch vorhanden.
 
 **Voraussetzung:** `python3` muss in WSL installiert sein — `install.sh`
 prüft das und bricht sonst mit Fehlermeldung ab.
@@ -129,9 +153,12 @@ Sessions laden `settings.json` nicht nach.
 **Voraussetzungen:**
 - Windows mit WSL2
 - Claude Code (in WSL installiert)
-- `python3` in WSL
-- Optional, für die Geräte-Kopplung: SignalRGB sowie mindestens ein von
-  SignalRGB unterstütztes RGB-Gerät
+- `python3` in WSL (`curl` wird für den automatischen OpenRGB-Download
+  empfohlen, ist aber nicht zwingend — fehlt es, bleibt die Geräte-Kopplung
+  einfach inaktiv, der Rest funktioniert normal)
+- Optional, für die Geräte-Kopplung: mindestens ein von OpenRGB
+  unterstütztes RGB-Gerät (OpenRGB selbst lädt `install.sh` automatisch
+  herunter)
 
 **Einrichtung:**
 
@@ -147,14 +174,16 @@ zu einem festen Namen oder Benutzer.
 Danach:
 - Hooks gelten erst für **neue** Claude-Code-Sessions — bereits laufende
   Sessions laden `settings.json` nicht nach, also neu starten.
-- Für die Geräte-Kopplung: SignalRGB einmal starten und unter Einstellungen
-  → „Bei der Anmeldung starten" aktivieren (steht standardmäßig auf AUS), dann
-  einmalig unter Bibliothek/Effekte den Effekt „Claude Signal" auswählen —
-  danach läuft alles automatisch.
+- Für die Geräte-Kopplung ist nichts weiter zu tun — das Overlay startet den
+  OpenRGB-Server beim ersten Start selbst, lautlos im Hintergrund.
 - Turtle-Beach-Vulcan-II-Nutzer: Tastatur muss auf Onboard-**Profil 1** stehen
   (`FN+F1`) — nur dort gibt die Firmware die LED-Kontrolle an Software frei.
-- Ohne SignalRGB läuft nur der Bildschirm-Punkt (bewusster Guard, kein
-  Fehler) — die Geräte-Kopplung bleibt dann einfach inaktiv.
+- Läuft noch eine ältere SignalRGB-Installation: beenden bzw. deinstallieren
+  (`winget uninstall WhirlwindFX.SignalRgb`) — parallel zu OpenRGB kämpfen
+  beide um die Geräte.
+- Ohne OpenRGB (z. B. weil der automatische Download fehlschlug) läuft nur
+  der Bildschirm-Punkt (bewusster Guard, kein Fehler) — die Geräte-Kopplung
+  bleibt dann einfach inaktiv.
 
 ## Betriebsvoraussetzungen
 
@@ -162,15 +191,20 @@ Danach:
    Onboard-Profil 1 stehen (`FN+F1`). Nur auf Profil 1 gibt deren Firmware die
    LED-Kontrolle an Software frei — auf Profil 2–4 ignoriert sie
    Beleuchtungs-Befehle stumm (empirisch ermittelt, kein Fehler, keine
-   Meldung, einfach nichts). Andere Geräte brauchen keinen solchen Trick —
-   alles, was SignalRGB steuern kann, funktioniert direkt.
-2. **SignalRGB muss laufen.** Empfehlung: in SignalRGB unter Einstellungen →
-   „Bei der Anmeldung starten" aktivieren (steht standardmäßig auf AUS).
-3. **Turtle Beach Swarm II darf nicht parallel laufen** — beide Tools kämpfen
-   sonst um die Beleuchtung.
+   Meldung, einfach nichts — das war auch der Grund, warum frühere Versuche
+   mit OpenRGB scheiterten, nicht OpenRGB selbst). Andere Geräte brauchen
+   keinen solchen Trick — alles, was OpenRGB steuern kann, funktioniert
+   direkt.
+2. **SignalRGB darf nicht parallel laufen**, falls noch installiert — beide
+   Tools kämpfen sonst um dieselbe Beleuchtung. Am saubersten: den
+   SignalRGB-Autostart deaktivieren oder SignalRGB deinstallieren.
+3. **Turtle Beach Swarm II darf nicht parallel laufen** — derselbe Konflikt
+   wie bei SignalRGB.
 
-Läuft SignalRGB nicht, macht die Geräte-Kopplung schlicht nichts (der Effekt
-liest state.txt einfach nicht) — der Overlay-Punkt funktioniert davon
+Der OpenRGB-Server startet automatisch mit dem Overlay — nichts ist manuell
+zu starten oder zu konfigurieren. Fehlt OpenRGB (z. B. weil der Download bei
+der Installation fehlschlug), macht die Geräte-Kopplung schlicht nichts
+(bewusster Guard, kein Fehler) — der Overlay-Punkt funktioniert davon
 unabhängig weiter.
 
 ## Bedienung
@@ -179,34 +213,30 @@ unabhängig weiter.
 - **Hover:** Tooltip mit Session-Zählung (z. B. „2 Session(s): 1 arbeitet, 0 wartet, 1 fertig").
 - **Ohne Session unsichtbar:** Der Punkt blendet sich automatisch aus, sobald
   keine Session mehr lebt, und erscheint bei der nächsten wieder von selbst.
-- **Rechtsklick:** beendet das Overlay und schreibt vorher noch einmal
-  „gray" nach `state.txt` — läuft der Effekt „Claude Signal" gerade, zeigt er
-  das binnen ~600 ms als Ruhe-Blau. Da das Overlay nie mehr aktiv einen
-  Effekt wechselt, bleibt dabei alles unangetastet, was du sonst in SignalRGB
-  eingestellt hast. Funktioniert nur, während der Punkt sichtbar ist — ist er
-  gerade ausgeblendet, beendest du den Prozess stattdessen so:
+- **Rechtsklick:** beendet das Overlay und schickt den Geräten vorher noch
+  einen letzten stillen Befehl auf Ruhe-Blau zurück. Funktioniert nur,
+  während der Punkt sichtbar ist — ist er gerade ausgeblendet, beendest du
+  den Prozess stattdessen so:
   ```bash
   cd /mnt/c && powershell.exe -NoProfile -Command 'Get-CimInstance Win32_Process | Where-Object { $_.Name -eq "powershell.exe" -and $_.ProcessId -ne $PID -and $_.CommandLine -like "*-File*ClaudeSignal.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }'
   ```
   (oder du lässt ihn einfach laufen — er startet ohnehin automatisch mit).
-- **Effekt anpassen:** `signalrgb-effects/Claude Signal.html.template`
-  editieren (den Platzhalter `{{STATE_URL}}` unverändert lassen —
-  `install.sh` ersetzt ihn durch den echten `state.txt`-Pfad), dann
-  `bash ~/.claude/claude-signal/install.sh`, danach SignalRGB neu starten — es
-  liest neue oder geänderte Effektdateien erst nach einem Neustart ein.
-  **Wichtig:** Effektdateien dürfen kein `<!doctype>`, `<meta charset>` oder
-  `<style>` enthalten — SignalRGBs Indexer verweigert sie sonst.
+- **Farben anpassen:** `$kbMap` in `ClaudeSignal.ps1` enthält die Hex-Farben
+  pro Zustand (ohne `#`, OpenRGB-Format) — direkt editieren, dann
+  `bash ~/.claude/claude-signal/install.sh` erneut ausführen.
 
 ## Troubleshooting
 
 **RGB-Geräte reagieren nicht:**
-- Ist der Effekt „Claude Signal" in SignalRGB aktiv ausgewählt (nicht
-  irgendein anderer)?
 - Steht die Tastatur (bei Turtle Beach Vulcan II) auf Profil 1?
-- Läuft der Prozess `SignalRgb`?
-- Ist Swarm II beendet?
-- Nach einer Effekt-Änderung in `signalrgb-effects/`: wurde SignalRGB neu
-  gestartet?
+- Existiert
+  `<LOCALAPPDATA>\ClaudeSignal\tools\OpenRGB\OpenRGB Windows 64-bit\OpenRGB.exe`?
+  Falls nicht: `install.sh` erneut ausführen (lädt OpenRGB nach) oder es
+  manuell von https://openrgb.org besorgen und dorthin entpacken.
+- Läuft der Prozess `OpenRGB` (Taskmanager)? Er startet automatisch mit der
+  nächsten neuen Claude-Session — bei Bedarf eine neue Session öffnen.
+- Läuft SignalRGB oder Swarm II noch parallel? Beenden — beide kämpfen mit
+  OpenRGB um dieselben Geräte.
 
 **`report-status.sh` von Hand testen:**
 stdin muss gepipt sein — ein Aufruf mit Terminal-stdin ist absichtlich ein
@@ -250,10 +280,12 @@ der Aggregation ignoriert (gelten als stale). Statusdateien, die älter als
    einfach ein `settings.json.bak.*` zurückspielen — die vorhandenen Backups
    enthalten die Hooks bereits.
 2. Ordner `<LOCALAPPDATA>\ClaudeSignal` löschen (Windows-Pfad wie oben
-   ermitteln).
-3. Die Datei `Claude Signal.html` aus `Documents\WhirlwindFX\Effects` löschen
-   (im Explorer als „Dokumente" angezeigt).
-4. Optional: SignalRGB deinstallieren (`winget uninstall WhirlwindFX.SignalRgb`).
+   ermitteln) — entfernt Overlay, Statusdateien und die mitgelieferte
+   OpenRGB-Installation in einem Schritt.
+3. Optional, falls noch vorhanden: alte `Claude *.html`-Effektdateien aus
+   `Documents\WhirlwindFX\Effects` löschen sowie SignalRGB deinstallieren
+   (`winget uninstall WhirlwindFX.SignalRgb`) — wird von aktuellen Versionen
+   dieses Tools nicht mehr benötigt.
 
 ## Bekannte Grenzen
 
@@ -266,10 +298,9 @@ der Aggregation ignoriert (gelten als stale). Statusdateien, die älter als
   sind außerhalb des Umfangs.
 - Die `PreToolUse`- und `PostToolUse`-Hooks kosten pro Tool-Aufruf ein paar
   Millisekunden zusätzlich.
-- Der SignalRGB-Effekt zeigt bis zu 10 s nach dem letzten Overlay-Herzschlag
-  (z. B. weil das Overlay beendet wurde) weiterhin den letzten Zustand, bevor
-  er selbständig auf Grau zurückfällt (Stale-Fallback in `state.txt`).
-- Die Geräte-Kopplung setzt SignalRGB voraus; sie funktioniert mit jedem dort
-  unterstützten Gerät. OpenRGB wurde als schlankere Alternative probiert,
-  scheiterte aber an der Firmware-Revision der Test-Tastatur (Turtle Beach
-  Vulcan II, `10F5:501B`) — siehe Repo-Verlauf.
+- Keine Wellen-/Puls-Animationen mehr auf der Tastatur — OpenRGBs
+  Kommandozeile kann nur Farben setzen, „wartet" zeigt sich daher als
+  Blinken statt als weicher Puls (siehe RGB-Geräte-Abschnitt oben).
+- Die Geräte-Kopplung setzt OpenRGB voraus und funktioniert mit jedem dort
+  unterstützten Gerät. Frühere Fehlversuche mit OpenRGB lagen am aktiven
+  Tastatur-Profil (4 statt 1), nicht an OpenRGB selbst — siehe Repo-Verlauf.

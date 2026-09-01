@@ -10,9 +10,6 @@ command -v python3 >/dev/null || { echo "FEHLER: python3 fehlt"; exit 1; }
 REPORT_SCRIPT="$SRC/report-status.sh"
 [ -f "$REPORT_SCRIPT" ] || { echo "FEHLER: report-status.sh fehlt"; exit 1; }
 
-TEMPLATE="$SRC/signalrgb-effects/Claude Signal.html.template"
-[ -f "$TEMPLATE" ] || { echo "FEHLER: $TEMPLATE fehlt"; exit 1; }
-
 # --- Windows-Pfade zur Installationszeit erkennen (kein Hardcoding mehr) ---
 PSEXE="$(command -v powershell.exe || echo /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe)"
 [ -x "$PSEXE" ] || { echo "FEHLER: powershell.exe nicht gefunden ($PSEXE) — läuft das hier unter WSL mit Windows-Interop?"; exit 1; }
@@ -38,6 +35,30 @@ mkdir -p "$WIN_DIR/sessions"
 cp "$SRC/ClaudeSignal.ps1" "$SRC/Signal.Logic.ps1" "$WIN_DIR/"
 echo "Overlay-Dateien kopiert nach: $WIN_DIR"
 
+# OpenRGB bereitstellen (Tastatur/Geräte-Backend, ersetzt SignalRGB komplett —
+# lautlos, kein Fenster/Effekt-Sandbox). Nicht fatal: ohne OpenRGB läuft nur
+# der Bildschirm-Punkt weiter (Guard in ClaudeSignal.ps1 lässt den RGB-Teil aus).
+ORGB_DIR="$WIN_DIR/tools/OpenRGB"
+ORGB_EXE="$ORGB_DIR/OpenRGB Windows 64-bit/OpenRGB.exe"
+if [ -f "$ORGB_EXE" ]; then
+  echo "OpenRGB bereit: $ORGB_EXE"
+else
+  mkdir -p "$WIN_DIR/tools"
+  if curl -sL -o "$WIN_DIR/tools/openrgb.zip" \
+       'https://gitlab.com/CalcProgrammer1/OpenRGB/-/jobs/artifacts/master/download?job=Windows%2064' \
+     && python3 -c '
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    z.extractall(sys.argv[2])
+' "$WIN_DIR/tools/openrgb.zip" "$ORGB_DIR" \
+     && [ -f "$ORGB_EXE" ]; then
+    echo "OpenRGB bereit: $ORGB_EXE"
+  else
+    echo "WARNUNG: OpenRGB konnte nicht heruntergeladen/entpackt werden — Geräte-Kopplung bleibt inaktiv, der Rest der Installation läuft normal weiter."
+  fi
+  rm -f "$WIN_DIR/tools/openrgb.zip"
+fi
+
 # signal.env schreiben — report-status.sh liest daraus zur Laufzeit, statt
 # Windows-Pfade hartzukodieren. Macht das Repo portabel (kein Nutzername mehr im Code).
 cat > "$SRC/signal.env" <<ENV
@@ -46,44 +67,23 @@ CLAUDE_SIGNAL_OVERLAY_WIN="$OVERLAY_WIN"
 ENV
 echo "signal.env geschrieben: $SRC/signal.env"
 
-# SignalRGB-Effekt aus Vorlage generieren: {{STATE_URL}} durch den echten
-# file://-Pfad von state.txt ersetzen (aus dem erkannten %LOCALAPPDATA%).
-# Der Effekt pollt state.txt danach selbst — kein Effektwechsel/Deep-Link mehr.
-url_local="${WIN_LOCAL//\\//}"
-url_local="${url_local// /%20}"
-STATE_URL="file:///${url_local}/ClaudeSignal/state.txt"
-
-mkdir -p "$EFF_DST"
-GENERATED="$(mktemp)"
-trap 'rm -f "$GENERATED"' EXIT
-STATE_URL="$STATE_URL" TEMPLATE_PATH="$TEMPLATE" OUT_PATH="$GENERATED" python3 - <<'PY'
-import os
-
-with open(os.environ['TEMPLATE_PATH'], 'r', encoding='utf-8') as f:
-    content = f.read()
-content = content.replace('{{STATE_URL}}', os.environ['STATE_URL'])
-with open(os.environ['OUT_PATH'], 'w', encoding='utf-8') as f:
-    f.write(content)
-PY
-
-DEST_EFFECT="$EFF_DST/Claude Signal.html"
-changed=0
-cmp -s "$GENERATED" "$DEST_EFFECT" 2>/dev/null || changed=1
-cp "$GENERATED" "$DEST_EFFECT"
-rm -f "$GENERATED"
-trap - EXIT
-echo "SignalRGB-Effekt generiert: $DEST_EFFECT"
-if [ "$changed" = 1 ]; then
-  echo "HINWEIS: Effektdatei neu/geändert — SignalRGB einmal neu starten, damit es sie einliest."
+# Veraltete Artefakte früherer Versionen entfernen: v2 (Einzel-Effekte je Zustand),
+# v3 (selbst-pollender Effekt + state.txt-Kanal), Testdateien. EFF_DST/WhirlwindFX
+# existiert auf frischen Rechnern u.U. gar nicht (mehr) — dann einfach überspringen.
+if [ -d "$EFF_DST" ]; then
+  for obsolete in "Claude Blau.html" "Claude Blau Puls.html" "Claude Gruen.html" \
+                  "Claude Rot Puls.html" "Claude Rot Lauf.html" "Claude Signal Probe.html" \
+                  "Claude Signal.html" "Claude Signal Debug.html"; do
+    if [ -f "$EFF_DST/$obsolete" ]; then
+      rm -f "$EFF_DST/$obsolete"
+      echo "Veraltete Effektdatei entfernt: $EFF_DST/$obsolete"
+    fi
+  done
 fi
-
-# Veraltete Einzel-Effekte aus der Deep-Link-Ära (v2) und Testartefakte
-# entfernen, falls noch von einer älteren Installation vorhanden.
-for obsolete in "Claude Blau.html" "Claude Blau Puls.html" "Claude Gruen.html" \
-                "Claude Rot Puls.html" "Claude Rot Lauf.html" "Claude Signal Probe.html"; do
-  if [ -f "$EFF_DST/$obsolete" ]; then
-    rm -f "$EFF_DST/$obsolete"
-    echo "Veraltete Effektdatei entfernt: $EFF_DST/$obsolete"
+for obsolete in "testsrv.ps1" "state.txt"; do
+  if [ -f "$WIN_DIR/$obsolete" ]; then
+    rm -f "$WIN_DIR/$obsolete"
+    echo "Veraltete Datei entfernt: $WIN_DIR/$obsolete"
   fi
 done
 

@@ -204,3 +204,35 @@ zuverlässig, weil sie bereits rAF nutzten). Ist `state.txt` älter als 10 s
 Installationszeit erkannten `%LOCALAPPDATA%` gebildet: Backslashes → `/`,
 Leerzeichen → `%20`) und entfernt beim Deploy die fünf alten Einzel-Effekte
 sowie Testartefakte, falls noch vorhanden.
+
+**Update 8 (2026-09-01):** v4 — OpenRGB statt SignalRGB. Grund: Der
+SignalRGB-Effekt aus Update 7 lief in einer Sandbox, die Datei- und
+HTTP-Zugriffe blockiert (kein `state.txt`-Lesen möglich, Deep-Links poppten
+weiterhin gelegentlich ein Fenster). Durchbruch: OpenRGB steuert die Turtle
+Beach Vulcan II sehr wohl — alle früheren Fehlschläge lagen daran, dass die
+Tastatur auf Onboard-Profil 4 statt Profil 1 stand (Software-LED-Kontrolle
+gibt die Firmware nur auf Profil 1 frei), plus an späteren Testläufen gegen
+eine zwischenzeitlich gelöschte OpenRGB-Programmdatei (Phantomläufe). Live
+verifiziert: ein persistenter `OpenRGB.exe --server --startminimized
+--device 0 --mode direct --color <hex>` hält die Farbe; ein zweiter,
+wegwerfbarer Client-Aufruf `OpenRGB.exe --device 0 --mode direct --color
+<hex>` verbindet sich automatisch zum laufenden Server und schaltet die
+Farbe lautlos um — kein Fenster, kein Popup. `ClaudeSignal.ps1` startet den
+Server einmalig beim Hochfahren (falls kein `OpenRGB`-Prozess läuft) und
+schickt danach bei jedem Tick einen Wegwerf-Aufruf; ein `lastKbSent`-Guard
+unterdrückt redundante Aufrufe bei unverändertem Zustand. `state.txt` und
+der selbst-pollende Effekt aus Update 7 sind komplett entfernt — der
+`signalrgb-effects/`-Ordner entfällt. Neue Option `config.json` →
+`{"AllRgbDevices": true}` färbt statt nur Gerät 0 (Tastatur) alle von
+OpenRGB erkannten Geräte. Statt der bisherigen Wellen-/Puls-Animationen
+(die OpenRGBs reine Farbsetz-Kommandozeile nicht kann) blinkt „wartet"
+jetzt zwischen Zustandsfarbe und dunklem Rot: einmal pro Sekunde
+(`yellow`), doppelt so schnell bei zusätzlich aktivem Hintergrund-Agenten
+(`yellowbusy`). `install.sh` lädt den offiziellen Windows-Build automatisch
+von der GitLab-CI (`master`-Pipeline-Artefakt) herunter und entpackt ihn
+nach `%LOCALAPPDATA%\ClaudeSignal\tools\OpenRGB\`, falls noch nicht
+vorhanden; schlägt der Download fehl, ist das nicht fatal (nur Warnung,
+Geräte-Kopplung bleibt inaktiv). Beim Deploy werden zusätzlich alle
+Effektdateien aus `Documents\WhirlwindFX\Effects` sowie veraltete
+v3-Artefakte (`testsrv.ps1`, `state.txt` im Deploy-Ordner) entfernt, falls
+vorhanden.
