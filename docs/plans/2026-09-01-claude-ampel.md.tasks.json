@@ -1,0 +1,66 @@
+{
+  "planPath": "docs/plans/2026-09-01-claude-ampel.md",
+  "tasks": [
+    {
+      "id": 1,
+      "subject": "Task 1: Hook-Skript report-status.sh mit Tests",
+      "status": "completed",
+      "description": "**Goal:** Bash-Skript für Claude-Code-Hooks, schreibt/löscht Statusdateien, blockiert nie.\n\n**Files:** Create ~/.claude/ampel/report-status.sh, Test ~/.claude/ampel/tests/test-report-status.sh\n\n```json:metadata\n{\"files\": [\"report-status.sh\", \"tests/test-report-status.sh\"], \"verifyCommand\": \"bash ~/.claude/ampel/tests/test-report-status.sh\", \"acceptanceCriteria\": [\"working/waiting/done schreiben '<status> <ts>'\", \"start schreibt done + Spawn (AMPEL_NO_SPAWN überspringt)\", \"end löscht Datei\", \"Session-ID sed-extrahiert und sanitisiert\", \"Exit immer 0\", \"fehlendes Zielverzeichnis-Elternteil => no-op\"]}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: Aggregationslogik Ampel.Logic.ps1 mit Tests",
+      "status": "completed",
+      "blockedBy": [],
+      "description": "**Goal:** Testbare PS-Funktion Get-AmpelState: liest Statusdateien, Stale-Handling, liefert Farbe+Tooltip.\n\n**Files:** Create ~/.claude/ampel/Ampel.Logic.ps1, Test ~/.claude/ampel/tests/Test-AmpelLogic.ps1\n\n```json:metadata\n{\"files\": [\"Ampel.Logic.ps1\", \"tests/Test-AmpelLogic.ps1\"], \"verifyCommand\": \"cd /mnt/c && /mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\\\\\\\wsl.localhost\\\\Ubuntu-22.04\\\\home\\\\sreile\\\\.claude\\\\ampel\\\\tests\\\\Test-AmpelLogic.ps1'\", \"acceptanceCriteria\": [\"yellow > red > green > gray\", \"working > 3600s ignoriert\", \"> 86400s gelöscht\", \"kaputte Dateien übersprungen\", \"Tooltip mit Zählung\"]}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Overlay-UI ClaudeAmpel.ps1",
+      "status": "completed",
+      "blockedBy": [
+        2
+      ],
+      "description": "**Goal:** WPF-Overlay: Punkt, 500ms-Poll, Drag mit Positionsspeicherung, Tooltip, Rechtsklick beendet, Mutex-Einzelinstanz.\n\n**Files:** Create ~/.claude/ampel/ClaudeAmpel.ps1\n\n```json:metadata\n{\"files\": [\"ClaudeAmpel.ps1\"], \"verifyCommand\": \"manueller Smoke-Test laut Plan Steps 2-4 (Nutzer bestätigt)\", \"acceptanceCriteria\": [\"Punkt oben rechts, topmost, kein Taskbar-Eintrag\", \"Farbwechsel binnen ~1s\", \"Tooltip\", \"Drag + Persistenz\", \"Rechtsklick beendet\", \"Doppelstart wird verhindert\"]}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: Installation — Deploy + Hook-Registrierung",
+      "status": "completed",
+      "blockedBy": [
+        1,
+        3
+      ],
+      "description": "**Goal:** install.sh kopiert PS-Dateien nach %LOCALAPPDATA%\\ClaudeAmpel und trägt 6 Hooks idempotent in ~/.claude/settings.json ein (mit Backup).\n\n**Files:** Create ~/.claude/ampel/install.sh; Modify ~/.claude/settings.json\n\n```json:metadata\n{\"files\": [\"install.sh\"], \"verifyCommand\": \"bash ~/.claude/ampel/install.sh && bash ~/.claude/ampel/install.sh && python3-Assertion laut Plan\", \"acceptanceCriteria\": [\"beide .ps1 deployt\", \"6 Hook-Events korrekt, PreToolUse matcher *\", \"bestehende Settings unangetastet + Backup\", \"idempotent\"]}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: Tastatur-Backend (SignalRGB-Deep-Links) in ClaudeAmpel.ps1",
+      "status": "completed",
+      "blockedBy": [
+        3
+      ],
+      "description": "**Goal:** Overlay feuert bei Farbwechsel signalrgb://effect/apply/<Effekt> (Mapping laut Spec-Erweiterung); Effektdateien ins Repo unter signalrgb-effects/.\n\n```json:metadata\n{\"files\": [\"ClaudeAmpel.ps1\", \"signalrgb-effects/*.html\"], \"verifyCommand\": \"Syntax-Parse + Live-Test mit Statusdateien, Nutzer bestätigt Tastaturfarben\", \"acceptanceCriteria\": [\"Deep-Link nur bei Farbwechsel\", \"Guard: nur wenn SignalRgb-Prozess läuft\", \"Fehler verschluckt\", \"Effektquellen im Repo\"]}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: Ende-zu-Ende-Test + README",
+      "status": "completed",
+      "blockedBy": [
+        4
+      ],
+      "description": "**Goal:** E2E-Nachweis mit echter Claude-Session (headless + interaktiv), README mit Nutzung/Deinstallation.\n\n**Files:** Create ~/.claude/ampel/README.md\n\n```json:metadata\n{\"files\": [\"README.md\"], \"verifyCommand\": \"Headless-Check laut Plan Step 1; interaktiv: Nutzer bestätigt\", \"acceptanceCriteria\": [\"claude -p erzeugt/entfernt Statusdatei\", \"interaktiv: rot/grün/gelb/grau wie erwartet\", \"README vollständig\"]}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 7: Warte-Signal übersteht Hintergrund-Agenten (waitingbusy + Ampel Rot Lauf)",
+      "status": "completed",
+      "blockedBy": [
+        4,
+        6
+      ],
+      "description": "**Goal:** agent_id-Erkennung in report-status.sh, Status waitingbusy, Farbe yellowbusy, Effekt 'Ampel Rot Lauf'; live abgenommen (rote Laufwelle stabil bei offener Frage + Hintergrund-Ticker).\n\n```json:metadata\n{\"files\": [\"report-status.sh\", \"Ampel.Logic.ps1\", \"ClaudeAmpel.ps1\", \"signalrgb-effects/Ampel Rot Lauf.html\"], \"verifyCommand\": \"beide Testsuiten + Live-Abnahme durch Nutzer\", \"acceptanceCriteria\": [\"waiting wird nie von Agenten überschrieben\", \"waitingbusy -> rote Laufwelle\", \"Nutzer bestätigt Stabilität\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-09-01T16:30:00Z"
+}
