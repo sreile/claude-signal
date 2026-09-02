@@ -1,8 +1,14 @@
 # Claude Signal
 
-Zeigt dir auf einen Blick, was deine Claude-Code-Sessions (WSL2) gerade
+Zeigt dir auf einen Blick, was deine Claude-Code-Sessions gerade
 treiben — als schwebender Farbpunkt auf dem Windows-Desktop und zusätzlich
-auf der RGB-Tastatur.
+auf deinen RGB-Geräten (Tastatur, Lüfter, AIO, …).
+
+> **Voraussetzungen:** 🪟 **Windows** mit **Claude Code in WSL2** ·
+> 🌈 RGB-Steuerung über **[OpenRGB](https://openrgb.org)** (Open Source,
+> wird vom Installer automatisch mitgeliefert — Version ist gepinnt).
+> Andere Setups (Claude Code nativ auf Windows, Linux/macOS) werden
+> derzeit **nicht** unterstützt.
 
 ## Farben
 
