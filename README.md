@@ -48,8 +48,8 @@ halten (siehe Architektur unten) — und überspringt unveränderte Bilder
 |---|---|
 | Keine Session | Ruhiges Blau, konstant |
 | Arbeitet | Blaue Welle mit sanftem Atmen |
-| Wartet auf dich | Rotes Pulsieren |
-| Wartet auf dich, Hintergrund arbeitet noch | Rote Welle (schneller) |
+| Wartet auf dich | Rotes Pulsieren (~0,8 s, alle Tasten gleichzeitig) |
+| Wartet auf dich, Hintergrund arbeitet noch | Rot, hektischer Puls (~0,4 s, alle Tasten gleichzeitig) |
 | Fertig | Grün, konstant |
 
 **Profil 1 ist Pflicht (Turtle Beach Vulcan II):** Die Tastatur muss auf
