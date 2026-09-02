@@ -658,7 +658,8 @@ class SignalAnimator
         {
             double k = 0.5 + 0.5 * Math.Sin(t / 127.0);
             byte r, g, b;
-            LerpColor(0x3C, 0x00, 0x00, 0xE5, 0x39, 0x35, k, out r, out g, out b);
+            // Spitze ist reines Rot (keine G/B-Anteile) — helle Mischtoene wirken auf LEDs pink
+            LerpColor(0x3C, 0x00, 0x00, 0xFF, 0x00, 0x00, k, out r, out g, out b);
             FillSolid(result, n, r, g, b);
         }
         else if (state == "yellowbusy")
@@ -670,7 +671,7 @@ class SignalAnimator
                 double d = WrappedDistance(p, phase);
                 double intensity = FalloffIntensity(d, 0.35);
                 byte r, g, b;
-                LerpColor(0x28, 0x00, 0x00, 0xFF, 0x10, 0x10, intensity, out r, out g, out b);
+                LerpColor(0x28, 0x00, 0x00, 0xFF, 0x00, 0x00, intensity, out r, out g, out b);
                 SetLed(result, i, r, g, b);
             }
         }
