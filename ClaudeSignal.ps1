@@ -25,8 +25,9 @@ try {
 
     # Punktfarben folgen dem Nutzer-Farbschema der Tastatur (nicht dem klassischen Rot-Gelb-Gruen):
     # gray=keine Session (dunkelblau), red=arbeitet (hellblau), yellow=wartet (rot), green=fertig,
-    # yellowbusy=wartet+Hintergrund arbeitet noch (rot, gleiche Farbe wie yellow)
-    $colorMap = @{ gray = '#1050E0'; green = '#43A047'; red = '#2878FF'; yellow = '#E53935'; yellowbusy = '#E53935' }
+    # yellowbusy=wartet+Hintergrund arbeitet noch (rot, gleiche Farbe wie yellow),
+    # limited=Session-/Nutzungslimit-Wartezeit (gelb, v6.2)
+    $colorMap = @{ gray = '#1050E0'; green = '#43A047'; red = '#2878FF'; yellow = '#E53935'; yellowbusy = '#E53935'; limited = '#FFC800' }
 
     # RGB-Backend: SignalAnimator.exe (C#, SDK-Streaming über OpenRGB Port 6742)
     # rendert die Effekte selbst — das Overlay schreibt dafür nur den
@@ -137,7 +138,7 @@ try {
             # der Punkt erst nach einem Neustart des Overlays). Ungültige/
             # fehlende Einträge lassen den jeweiligen $colorMap-Standard stehen.
             if ($cfg.States) {
-                $stateKeyMap = @{ working = 'red'; waiting = 'yellow'; waitingbusy = 'yellowbusy'; done = 'green'; idle = 'gray' }
+                $stateKeyMap = @{ working = 'red'; waiting = 'yellow'; waitingbusy = 'yellowbusy'; done = 'green'; idle = 'gray'; limited = 'limited' }
                 foreach ($configKey in $stateKeyMap.Keys) {
                     $entry = $cfg.States.$configKey
                     if ($null -eq $entry) { continue }

@@ -122,6 +122,34 @@ Write-Status 'a' "waiting $($now - 10)"
 $s = Get-SignalState -SessionsDir $tmp -NowUnix $now
 Check 'waiting allein: yellow' 'yellow' $s.Color
 
+# 15) limited allein -> 'limited' (v6.2, Session-/Nutzungslimit)
+Clear-Dir
+Write-Status 'a' "limited $($now - 10)"
+$s = Get-SignalState -SessionsDir $tmp -NowUnix $now
+Check 'limited allein: limited' 'limited' $s.Color
+Check 'limited Tooltip' '1 Session(s): 0 arbeitet, 0 wartet, 0 fertig, 1 limitiert' $s.Tooltip
+
+# 16) limited + working -> limited dominiert (kontoweites Limit vor reinem Arbeiten)
+Clear-Dir
+Write-Status 'a' "limited $($now - 10)"
+Write-Status 'b' "working $($now - 10)"
+$s = Get-SignalState -SessionsDir $tmp -NowUnix $now
+Check 'limited+working: limited' 'limited' $s.Color
+
+# 17) limited + waiting -> "wartet auf dich" bleibt dringlicher (gelb)
+Clear-Dir
+Write-Status 'a' "limited $($now - 10)"
+Write-Status 'b' "waiting $($now - 10)"
+$s = Get-SignalState -SessionsDir $tmp -NowUnix $now
+Check 'limited+waiting: yellow' 'yellow' $s.Color
+
+# 18) limited + done -> limited dominiert vor fertig/grün
+Clear-Dir
+Write-Status 'a' "limited $($now - 10)"
+Write-Status 'b' "done $($now - 10)"
+$s = Get-SignalState -SessionsDir $tmp -NowUnix $now
+Check 'limited+done: limited' 'limited' $s.Color
+
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -23,15 +23,17 @@ dort ist der Punkt ausgeblendet, während die Tastatur ruhig blau bleibt.
 | 🔵 Helles Blau (`#2878FF`), sanft pulsierend | Mindestens eine Session arbeitet |
 | 🔴 Rot (`#E53935`), schnell pulsierend | Mindestens eine Session wartet auf dich (Berechtigung/Eingabe) |
 | 🔴 Rot (`#E53935`), schnell pulsierend | Wartet auf dich, UND ein Hintergrund-Agent arbeitet noch weiter (optisch gleich wie „nur wartet" — der Unterschied zeigt sich auf der Tastatur) |
+| 🟡 Gelb (`#FFC800`) | Session-/Nutzungslimit erreicht — Claude wartet automatisch weiter (siehe „Session-/Nutzungslimit erkennen" unten) |
 | 🟢 Grün (`#43A047`) | Mindestens eine Session offen, alle fertig |
 
-Priorität bei mehreren Sessions: **wartet > arbeitet > fertig > keine Session**
-— „wartet auf dich" gewinnt, weil das die einzige Info ist, auf die du
-reagieren musst. Das gilt auch, wenn parallel ein Hintergrund-Agent noch
-arbeitet: Ein offenes „waiting" wird **nie** von einem Agenten überschrieben,
-nur von der Hauptkette selbst aufgelöst (siehe Update 3 im Spec-Dokument).
-Beim Absenden einer Antwort springt die Anzeige sofort auf „arbeitet"
-(PostToolUse-Hook) — gilt ab der nächsten neuen Session.
+Priorität bei mehreren Sessions: **wartet > limitiert > arbeitet > fertig >
+keine Session** — „wartet auf dich" gewinnt, weil das die einzige Info ist,
+auf die du reagieren musst. Das gilt auch, wenn parallel ein Hintergrund-Agent
+noch arbeitet: Ein offenes „waiting" wird **nie** von einem Agenten
+überschrieben, nur von der Hauptkette selbst aufgelöst (siehe Update 3 im
+Spec-Dokument). „Limitiert" steht vor „arbeitet", weil ein Limit kontoweit
+gilt, nicht pro Session. Beim Absenden einer Antwort springt die Anzeige
+sofort auf „arbeitet" (PostToolUse-Hook) — gilt ab der nächsten neuen Session.
 
 ### RGB-Geräte (via OpenRGB)
 
@@ -54,8 +56,9 @@ halten (siehe Architektur unten) — und überspringt unveränderte Bilder
 |---|---|
 | Keine Session | Ruhiges Blau, konstant |
 | Arbeitet | Blaue Welle mit sanftem Atmen |
-| Wartet auf dich | Rotes Pulsieren (~0,8 s, alle Tasten gleichzeitig) |
-| Wartet auf dich, Hintergrund arbeitet noch | Rot, hektischer Puls (~0,4 s, alle Tasten gleichzeitig) |
+| Wartet auf dich | Rotes Pulsieren (~0,8 s, alle Tasten gleichzeitig — „flächiger Alarm") |
+| Wartet auf dich, Hintergrund arbeitet noch | Rote Welle (~1,0 s) — Rot = Aufmerksamkeit, Welle = es läuft noch etwas: „du bist gefragt UND es läuft noch was" |
+| Session-/Nutzungslimit erreicht | Langsame gelbe Welle (~2,5 s) — deutlich ruhiger und anders eingefärbt als „arbeitet"/„wartet", damit ein Limit auf den ersten Blick erkennbar ist |
 | Fertig | Grün, konstant |
 
 **Profil 1 ist Pflicht (Turtle Beach Vulcan II):** Die Tastatur muss auf
@@ -96,9 +99,32 @@ SignalRGB komplett deinstallieren (`winget uninstall WhirlwindFX.SignalRgb`).
 **Wichtig:** SignalRGB darf **niemals** parallel zu OpenRGB laufen — beide
 kämpfen um dieselbe Gerätekontrolle.
 
+### Session-/Nutzungslimit erkennen
+
+Läuft dir mal ein Session- oder Nutzungslimit rein, wartet Claude Code
+üblicherweise automatisch weiter — ohne dass währenddessen weitere
+Hook-Ereignisse feuern. Ohne Erkennung bliebe die Anzeige die ganze Wartezeit
+über auf dem letzten Stand hängen (meist die blaue „arbeitet"-Welle). Deshalb
+wertet `report-status.sh` bei jedem `Notification`-Ereignis (Hook-Status
+`waiting`) den Nachrichtentext aus: enthält er (unabhängig von Groß-/
+Kleinschreibung) einen Ausdruck wie „usage limit", „session limit",
+„rate limit", „continuing automatically", „limit reached" oder „resets
+<Uhrzeit>", wird daraus **statt** „wartet auf dich" der eigene Zustand
+„limitiert" (langsame gelbe Welle, siehe Tabelle oben).
+
+**Ehrlicher Stand:** Ob und mit welchem genauen Text Claude Code bei einem
+Limit tatsächlich ein `Notification`-Ereignis feuert, ist zum Zeitpunkt
+dieses Commits noch nicht am echten Ereignis verifiziert — das Muster basiert
+auf plausiblen Formulierungen. Jede `Notification`-Nachricht wird deshalb
+zusätzlich (unabhängig davon, ob sie als Limit erkannt wurde) nach
+`<LOCALAPPDATA>\ClaudeSignal\notifications.log` mitgeschnitten (auf die
+letzten 50 Zeilen begrenzt) — beim nächsten echten Limit-Ereignis lässt sich
+dort der tatsächliche Text nachschlagen und das Muster in `report-status.sh`
+bei Bedarf nachschärfen.
+
 ## Farben & Effekte anpassen
 
-Alle fünf Zustände lassen sich in `config.json`
+Alle sechs Zustände lassen sich in `config.json`
 (`<LOCALAPPDATA>\ClaudeSignal\config.json`) einzeln umgestalten — ein
 optionaler `States`-Block neben `Left`/`Top`/`AllRgbDevices`/`ShowDot`. Ohne
 diesen Block (oder ganz ohne `config.json`) verhält sich alles exakt wie mit
@@ -118,16 +144,18 @@ Config-Schlüssel nicht (Merge-Save).
   "States": {
     "working":     { "effect": "wave",  "from": "#061C6E", "to": "#2878FF", "period_ms": 1400, "breath": true },
     "waiting":     { "effect": "pulse", "from": "#3C0000", "to": "#FF0000", "period_ms": 800 },
-    "waitingbusy": { "effect": "pulse", "from": "#3C0000", "to": "#FF0000", "period_ms": 400 },
+    "waitingbusy": { "effect": "wave",  "from": "#280000", "to": "#FF0000", "period_ms": 1000 },
     "done":        { "effect": "solid", "color": "#00B000" },
-    "idle":        { "effect": "solid", "color": "#1050E0" }
+    "idle":        { "effect": "solid", "color": "#1050E0" },
+    "limited":     { "effect": "wave",  "from": "#3A2A00", "to": "#FFC800", "period_ms": 2500 }
   }
 }
 ```
 
 **Zustände:** `working` = arbeitet, `waiting` = wartet auf dich,
 `waitingbusy` = wartet + Hintergrund arbeitet noch, `done` = fertig,
-`idle` = keine Session.
+`idle` = keine Session, `limited` = Session-/Nutzungslimit erreicht (siehe
+„Session-/Nutzungslimit erkennen" oben).
 
 **Effekte:**
 
@@ -363,6 +391,15 @@ unabhängig weiter.
   begrenzt).
 - Läuft SignalRGB oder Swarm II noch parallel? Beenden — beide kämpfen mit
   OpenRGB um dieselben Geräte.
+
+**Limit-Zustand wird nicht erkannt (Anzeige bleibt bei „arbeitet"/„wartet"
+statt auf die gelbe Welle zu wechseln):** Schau in
+`<LOCALAPPDATA>\ClaudeSignal\notifications.log`, welcher Text beim
+tatsächlichen Limit-Ereignis ankam, und gleiche ihn mit dem Muster in
+`report-status.sh` ab (Abschnitt „Notification-Nachricht klassifizieren").
+Passt der Text nicht zu den bisherigen Stichwörtern, das Muster dort
+ergänzen — gerne auch als Rückmeldung/Issue, damit der Standard für alle
+passt.
 
 **`report-status.sh` von Hand testen:**
 stdin muss gepipt sein — ein Aufruf mit Terminal-stdin ist absichtlich ein

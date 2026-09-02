@@ -52,6 +52,22 @@ main() {
         current=$(head -c 32 "$sessions_dir/$session_id.status" 2>/dev/null | cut -d' ' -f1)
         case "$current" in waiting|waitingbusy) new_status="waitingbusy" ;; esac
       fi
+      if [ "$status" = "waiting" ]; then
+        # Notification-Nachricht klassifizieren: Session-/Nutzungslimit-Warten
+        # sieht optisch anders aus als "wartet auf Berechtigung/Eingabe" (v6.2).
+        local message
+        message=$(printf '%s' "$input" \
+          | grep -o '"message"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 \
+          | sed 's/.*"\([^"]*\)"$/\1/')
+        if printf '%s' "$message" | grep -qiE 'usage limit|session limit|rate.?limit|continuing automatically|limit reached|resets [0-9]'; then
+          new_status="limited"
+        fi
+        # Rohtext der Notification mitschneiden — hilft, das Muster oben beim
+        # naechsten echten Limit-Ereignis zu verifizieren/nachzuschaerfen.
+        printf '%s\n' "$(date +%F' '%T) $message" >> "$win_dir/notifications.log"
+        tail -n 50 "$win_dir/notifications.log" > "$win_dir/notifications.log.tmp" \
+          && mv "$win_dir/notifications.log.tmp" "$win_dir/notifications.log"
+      fi
       printf '%s %s\n' "$new_status" "$(date +%s)" > "$sessions_dir/$session_id.status"
       ;;
   esac

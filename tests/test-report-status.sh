@@ -98,7 +98,32 @@ line=$(cat "$TMP/sessions/abc-123.status")
 check "Agent auf working: working" "working" "${line%% *}"
 run end "$JSON"
 
-# 14) Ohne signal.env UND ohne CLAUDE_SIGNAL_DIR-Override: stiller No-op (Exit 0,
+# 14) Notification-Klassifikation (v6.2): Limit-Nachricht -> 'limited' statt 'waiting'
+run waiting '{"session_id":"abc-123","message":"Usage limit reached · continuing automatically at 2:20pm"}'
+line=$(cat "$TMP/sessions/abc-123.status" 2>/dev/null || echo FEHLT)
+check "Limit-Nachricht: limited" "limited" "${line%% *}"
+
+# 15) normale Berechtigungsfrage bleibt 'waiting'
+run waiting '{"session_id":"abc-123","message":"Claude needs your permission to use Bash"}'
+line=$(cat "$TMP/sessions/abc-123.status" 2>/dev/null || echo FEHLT)
+check "Berechtigungsfrage: waiting" "waiting" "${line%% *}"
+
+# 16) fehlendes message-Feld bleibt 'waiting' (keine Fehlklassifikation)
+run waiting "$JSON"
+line=$(cat "$TMP/sessions/abc-123.status" 2>/dev/null || echo FEHLT)
+check "ohne message-Feld: waiting" "waiting" "${line%% *}"
+
+# 17) notifications.log wird angelegt und bleibt auf 50 Zeilen begrenzt
+rm -f "$TMP/notifications.log"
+for i in $(seq 1 55); do
+  run waiting "{\"session_id\":\"abc-123\",\"message\":\"Test $i\"}"
+done
+[ -f "$TMP/notifications.log" ] && echo "ok - notifications.log angelegt" || { echo "FAIL - notifications.log fehlt"; fails=$((fails+1)); }
+lines=$(wc -l < "$TMP/notifications.log" | tr -d ' ')
+check "notifications.log auf 50 Zeilen begrenzt" "50" "$lines"
+run end "$JSON"
+
+# 18) Ohne signal.env UND ohne CLAUDE_SIGNAL_DIR-Override: stiller No-op (Exit 0,
 #     keine Datei irgendwo). Dafür eine isolierte Kopie von report-status.sh in
 #     ein frisches Verzeichnis ohne signal.env legen, damit BASH_SOURCE dorthin zeigt.
 ISO=$(mktemp -d)

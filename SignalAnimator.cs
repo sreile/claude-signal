@@ -30,6 +30,11 @@
 // den eingebauten Standard zurueck (der exakt dem bisherigen festverdrahteten
 // Verhalten entspricht), der Rest der Konfiguration bleibt wirksam. Aenderungen
 // an config.json werden alle ~5 s automatisch neu eingelesen (Live-Reload).
+//
+// v6.2 (siehe Update 13 im Spec-Dokument): neuer Zustand "limited" (Session-/
+// Nutzungslimit-Wartezeit, von report-status.sh anhand der Notification-Nachricht
+// erkannt) -- langsame gelbe Welle, eigener Konfigurationsschluessel im
+// States-Block. "waitingbusy" zurueck zur roten Welle (statt schnellem Puls).
 
 using System;
 using System.Collections.Generic;
@@ -362,7 +367,7 @@ class SignalAnimator
     // eingebauten Standard zurueck (siehe DefaultFor). Komplett fehlende
     // oder unlesbare Datei -> alle Standardwerte, kein Fehler.
     // ---------------------------------------------------------------
-    static readonly string[] StateKeys = new string[] { "working", "waiting", "waitingbusy", "done", "idle" };
+    static readonly string[] StateKeys = new string[] { "working", "waiting", "waitingbusy", "done", "idle", "limited" };
 
     static void ReadConfig()
     {
@@ -447,10 +452,12 @@ class SignalAnimator
         }
         else if (key == "waitingbusy")
         {
-            c.Effect = "pulse";
-            c.FromR = 0x3C; c.FromG = 0x00; c.FromB = 0x00;
+            // v6.2 (B): zurueck zur roten Welle -- Rot = Aufmerksamkeit, Welle = Fortschritt;
+            // rote Welle = beides ("du bist gefragt UND es laeuft noch etwas nebenher").
+            c.Effect = "wave";
+            c.FromR = 0x28; c.FromG = 0x00; c.FromB = 0x00;
             c.ToR = 0xFF; c.ToG = 0x00; c.ToB = 0x00;
-            c.PeriodMs = 400;
+            c.PeriodMs = 1000;
             c.Breath = false;
         }
         else if (key == "done")
@@ -459,6 +466,16 @@ class SignalAnimator
             c.ToR = 0x00; c.ToG = 0xB0; c.ToB = 0x00;
             c.FromR = c.ToR; c.FromG = c.ToG; c.FromB = c.ToB;
             c.PeriodMs = 1000;
+            c.Breath = false;
+        }
+        else if (key == "limited")
+        {
+            // v6.2 (A): Session-/Nutzungslimit-Wartezeit -- langsame gelbe Welle, klar
+            // unterscheidbar von working (blaue Welle) und waiting/waitingbusy (rot).
+            c.Effect = "wave";
+            c.FromR = 0x3A; c.FromG = 0x2A; c.FromB = 0x00;
+            c.ToR = 0xFF; c.ToG = 0xC8; c.ToB = 0x00;
+            c.PeriodMs = 2500;
             c.Breath = false;
         }
         else // "idle" (und jeder unbekannte/verfallene Zustand)
@@ -478,6 +495,7 @@ class SignalAnimator
         if (internalState == "yellow") { return "waiting"; }
         if (internalState == "yellowbusy") { return "waitingbusy"; }
         if (internalState == "green") { return "done"; }
+        if (internalState == "limited") { return "limited"; }
         return "idle"; // "gray" oder unbekannt/stale
     }
 

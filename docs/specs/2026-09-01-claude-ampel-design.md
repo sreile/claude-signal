@@ -443,3 +443,75 @@ Annahme); absichtlich kaputte Einzeleinträge (ungültiges Hex, unbekannter
 `effect`-Wert) lösen den Pro-Zustand-Fallback aus, ohne den Prozess zu
 gefährden; eine Änderung an `config.json` während des Laufs wird binnen
 ~5 s übernommen („Konfiguration neu geladen" im Log).
+
+**Update 13 (2026-09-02):** v6.2 — zwei Nutzer-getriebene Änderungen nach
+einem echten Session-Limit-Ereignis.
+
+*A) Neuer Zustand `limited` (Session-/Nutzungslimit-Wartezeit).* Beobachtet:
+Während eines automatischen Weiterwartens nach einem Nutzungslimit
+(~40 min) feuern keine Hook-Ereignisse, die Anzeige blieb daher auf dem
+zuletzt bekannten `working` (blaue Welle) hängen — irreführend, weil in
+Wirklichkeit nichts arbeitet. `report-status.sh` klassifiziert deshalb bei
+jedem `Notification`-Ereignis (Hook-Arg bleibt `waiting`, unverändert in
+`settings.json`) den extrahierten `message`-Text: enthält er
+(case-insensitive, `grep -qiE`) eines von
+`usage limit|session limit|rate.?limit|continuing automatically|limit
+reached|resets [0-9]`, wird `waiting` intern zu `limited` umklassifiziert.
+Zusätzlich wird — unabhängig vom Klassifikationsergebnis — jede
+Notification-Nachricht nach `notifications.log` im Deploy-Ordner
+mitgeschnitten (nach jedem Append auf `tail -n 50` gekürzt), damit sich das
+Muster beim nächsten echten Limit-Ereignis anhand des tatsächlichen Texts
+verifizieren/nachschärfen lässt — **das ist zum Zeitpunkt dieses Commits
+noch offen**, das Muster selbst ist plausibel, aber nicht am echten Ereignis
+bestätigt.
+
+`Signal.Logic.ps1`: `$counts` bekommt den Schlüssel `limited`. Priorität
+bleibt: „wartet auf dich" (yellow/yellowbusy) zuerst — `limited` zählt
+dabei **nicht** als „es arbeitet etwas" für die yellowbusy-Regel — danach
+`elseif ($counts['limited'] -gt 0) { $color = 'limited' }`, erst danach
+`working`→rot, `done`→grün, sonst grau. Begründung für den Vorrang vor
+`working`: ein Limit gilt kontoweit, nicht pro Session. Keine
+Stale-Ignorieren-Regel für `limited` (die 3600-s-Regel gilt weiterhin nur
+für `working`); die 24-h-Aufräumung gilt unverändert für alle Status. Der
+Tooltip bekommt einen vierten, **optionalen** Teil („…, W limitiert"), nur
+wenn `W>0` ist — der bisherige Drei-Teile-Wortlaut bleibt für alle
+Bestandstests ohne `limited` unverändert bestehen.
+
+`SignalAnimator.cs`: neuer interner Zustand `limited` mit eigenem
+Default-Renderer — langsame gelbe Welle (`from #3A2A00`, `to #FFC800`,
+`period_ms 2500`, kein Atmen), im `States`-Block über den gleichnamigen
+Schlüssel `limited` konfigurierbar (gleiches Schema wie alle anderen
+Zustände). Der 10-s-Stale-Fallback von `state.txt` bleibt unverändert
+korrekt: Während der Limit-Wartezeit schreibt das Overlay `state.txt` bei
+jedem Tick weiter frisch (Herzschlag) — nur die *Session*-Statusdateien
+altern, nicht `state.txt` selbst; ein Verstummen von `state.txt` bedeutet
+nach wie vor „Overlay beendet/abgestürzt", nicht „Limit".
+
+`ClaudeSignal.ps1`: `$colorMap` bekommt `limited = '#FFC800'`; die
+`stateKeyMap` fürs Übernehmen der Punktfarbe aus `config.json` bekommt
+`limited = 'limited'`. `Set-DotPulse` braucht keine Änderung — `limited`
+passt in keinen der beiden Animations-Zweige (`red`, `yellow`/`yellowbusy`)
+und landet damit automatisch im statischen Standardfall, wie gewünscht.
+
+*B) `waitingbusy` zurück zur roten Welle.* Nutzer-Verfeinerung der Semantik:
+Rot = Aufmerksamkeit, Welle = Fortschritt/es-läuft-noch-was; eine rote Welle
+transportiert beides gleichzeitig. Der schnelle Puls aus Update 9/„Alarm-
+Optik korrigiert" wich damit wieder der Welle aus `from #280000`,
+`to #FF0000`, `period_ms 1000`, `breath false` (der v5-Wellen-Code existierte
+im Renderer bereits unverändert — nur der Default-Struct für `waitingbusy`
+wurde umgestellt). `waiting` bleibt bewusst beim flächigen Puls
+(`#3C0000`→`#FF0000`, 800 ms) — der Unterschied Puls (reines Warten) vs.
+Welle (Warten + Hintergrundaktivität) bleibt damit die tragende
+Unterscheidung zwischen den beiden Zuständen.
+
+*Verifikation:* `csc /warn:4 /warnaserror /langversion:5
+/r:System.Web.Extensions.dll` kompiliert warnungsfrei. Beide Testsuiten
+grün inkl. neuer Fälle (`report-status.sh`: Limit-Nachricht → `limited`,
+normale Berechtigungsfrage → `waiting`, fehlendes `message`-Feld →
+`waiting`, `notifications.log` angelegt und auf 50 Zeilen begrenzt;
+`Signal.Logic.ps1`: `limited` allein/+working/+waiting/+done sowie
+Tooltip-Suffix). Live/isoliert (gleiche `LOCALAPPDATA`-Override-Technik wie
+in Update 11/12, produktive Kette nicht angefasst): `limited` rendert ohne
+Fallback-Zeile im Log, ein `config.json`-Override für `limited` wird
+übernommen, ein unbekannter/nicht existenter Zustand fällt weiterhin auf
+grau zurück.
