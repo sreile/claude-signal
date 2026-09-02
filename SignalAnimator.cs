@@ -664,16 +664,12 @@ class SignalAnimator
         }
         else if (state == "yellowbusy")
         {
-            double phase = (t / 1000.0) % 1.0;
-            for (int i = 0; i < n; i++)
-            {
-                double p = (double)i / n;
-                double d = WrappedDistance(p, phase);
-                double intensity = FalloffIntensity(d, 0.35);
-                byte r, g, b;
-                LerpColor(0x28, 0x00, 0x00, 0xFF, 0x00, 0x00, intensity, out r, out g, out b);
-                SetLed(result, i, r, g, b);
-            }
+            // Alarm = alle Tasten gleichzeitig (Welle ist fuer "arbeitet" reserviert);
+            // schnelleres Tempo unterscheidet "wartet + Hintergrund aktiv" vom reinen Warten
+            double k = 0.5 + 0.5 * Math.Sin(t / 64.0);   // hektischer Puls ~0,4 s
+            byte r, g, b;
+            LerpColor(0x3C, 0x00, 0x00, 0xFF, 0x00, 0x00, k, out r, out g, out b);
+            FillSolid(result, n, r, g, b);
         }
         else // "gray" oder unbekannt/stale
         {
