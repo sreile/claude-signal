@@ -100,9 +100,16 @@ kämpfen um dieselbe Gerätekontrolle.
 
 Alle fünf Zustände lassen sich in `config.json`
 (`<LOCALAPPDATA>\ClaudeSignal\config.json`) einzeln umgestalten — ein
-optionaler `States`-Block neben `Left`/`Top`/`AllRgbDevices`. Ohne diesen
-Block (oder ganz ohne `config.json`) verhält sich alles exakt wie mit den
-eingebauten Standardwerten, die unten als Beispiel stehen:
+optionaler `States`-Block neben `Left`/`Top`/`AllRgbDevices`/`ShowDot`. Ohne
+diesen Block (oder ganz ohne `config.json`) verhält sich alles exakt wie mit
+den eingebauten Standardwerten, die unten als Beispiel stehen.
+
+**Overlay-Punkt abschalten:** `"ShowDot": false` in der `config.json` blendet
+den Bildschirmpunkt dauerhaft aus — die Engine (Statusdatei, RGB-Geräte,
+Überwachung) läuft unsichtbar weiter. Gilt ab dem nächsten Overlay-Start
+(neue Claude-Session). Beenden geht dann mangels Rechtsklick-Ziel nur über
+den `Stop-Process`-Einzeiler aus dem Bedienungs-Abschnitt. Das Verschieben
+des Punkts überschreibt die übrigen Config-Schlüssel nicht (Merge-Save).
 
 ```json
 {

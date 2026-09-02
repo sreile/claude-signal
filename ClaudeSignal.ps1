@@ -15,9 +15,9 @@ try {
     $statePath   = Join-Path $baseDir 'state.txt'
     $orgbExe = Join-Path $baseDir 'tools\OpenRGB\OpenRGB Windows 64-bit\OpenRGB.exe'
     $animExe = Join-Path $baseDir 'SignalAnimator.exe'
-    # AllRgbDevices wird nur fürs Config-Roundtrip beim Verschieben gebraucht —
-    # SignalAnimator.exe liest config.json selbst und entscheidet den Geräteumfang.
-    $script:allRgb = $false
+    # ShowDot=false in config.json blendet den Punkt dauerhaft aus (Engine läuft weiter);
+    # wird nur beim Start gelesen. SignalAnimator.exe liest config.json selbst.
+    $script:showDot = $true
     New-Item -ItemType Directory -Path $sessionsDir -Force | Out-Null
 
     # Logik neben dem Skript laden (funktioniert deployt UND direkt aus dem Repo/UNC)
@@ -129,8 +129,8 @@ try {
                     $window.Left = $left; $window.Top = $top
                 }
             }
-            if ($cfg.AllRgbDevices -eq $true) {
-                $script:allRgb = $true
+            if ($cfg.ShowDot -eq $false) {
+                $script:showDot = $false
             }
             # v6: Punktfarben folgen config.json (States-Block), sofern gültig —
             # nur beim Start gelesen (Animator liest denselben Block laufend neu,
@@ -157,8 +157,18 @@ try {
     $window.Add_MouseLeftButtonDown({
         try {
             $window.DragMove()  # blockiert bis zum Loslassen
-            @{ Left = $window.Left; Top = $window.Top; AllRgbDevices = $script:allRgb } | ConvertTo-Json |
-                Set-Content -LiteralPath $configPath -Encoding Ascii
+            # Merge statt Überschreiben: bestehende Config-Schlüssel (States, ShowDot,
+            # AllRgbDevices, ...) müssen den Positions-Save überleben
+            $saveCfg = @{}
+            try {
+                if (Test-Path -LiteralPath $configPath) {
+                    (Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json).PSObject.Properties |
+                        ForEach-Object { $saveCfg[$_.Name] = $_.Value }
+                }
+            } catch { }
+            $saveCfg['Left'] = $window.Left
+            $saveCfg['Top']  = $window.Top
+            $saveCfg | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding Ascii
         } catch { }
     })
     $window.Add_MouseRightButtonUp({ $window.Close() })
@@ -182,7 +192,7 @@ try {
             Write-SignalState $state.Color   # jeden Tick schreiben — gibt dem Animator einen Herzschlag
             if ($state.Color -eq 'gray') {
                 if ($window.IsVisible) { $window.Hide() }   # kein Punkt ohne Session
-            } elseif (-not $window.IsVisible) { $window.Show() }
+            } elseif (-not $window.IsVisible -and $script:showDot) { $window.Show() }
             if ($ellipse.ToolTip -ne $state.Tooltip) { $ellipse.ToolTip = $state.Tooltip }
         } catch {
             # Lesefehler: wie 'keine Session' behandeln — nächster Tick heilt
