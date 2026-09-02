@@ -15,9 +15,9 @@ try {
     $statePath   = Join-Path $baseDir 'state.txt'
     $orgbExe = Join-Path $baseDir 'tools\OpenRGB\OpenRGB Windows 64-bit\OpenRGB.exe'
     $animExe = Join-Path $baseDir 'SignalAnimator.exe'
-    # ShowDot=false in config.json blendet den Punkt dauerhaft aus (Engine läuft weiter);
-    # wird nur beim Start gelesen. SignalAnimator.exe liest config.json selbst.
-    $script:showDot = $true
+    # Der Bildschirmpunkt ist standardmäßig AUS (die RGB-Geräte sind die Anzeige);
+    # ShowDot=true in config.json blendet ihn ein. Wird nur beim Start gelesen.
+    $script:showDot = $false
     New-Item -ItemType Directory -Path $sessionsDir -Force | Out-Null
 
     # Logik neben dem Skript laden (funktioniert deployt UND direkt aus dem Repo/UNC)
@@ -129,8 +129,8 @@ try {
                     $window.Left = $left; $window.Top = $top
                 }
             }
-            if ($cfg.ShowDot -eq $false) {
-                $script:showDot = $false
+            if ($cfg.ShowDot -eq $true) {
+                $script:showDot = $true
             }
             # v6: Punktfarben folgen config.json (States-Block), sofern gültig —
             # nur beim Start gelesen (Animator liest denselben Block laufend neu,

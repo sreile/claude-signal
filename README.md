@@ -1,8 +1,8 @@
 # Claude Signal
 
 Zeigt dir auf einen Blick, was deine Claude-Code-Sessions gerade
-treiben — als schwebender Farbpunkt auf dem Windows-Desktop und zusätzlich
-auf deinen RGB-Geräten (Tastatur, Lüfter, AIO, …).
+treiben — auf deinen RGB-Geräten (Tastatur, Lüfter, AIO, …), optional
+zusätzlich als schwebender Farbpunkt auf dem Windows-Desktop (`ShowDot`).
 
 > **Voraussetzungen:** 🪟 **Windows** mit **Claude Code in WSL2** ·
 > 🌈 RGB-Steuerung über **[OpenRGB](https://openrgb.org)** (Open Source,
@@ -104,12 +104,14 @@ optionaler `States`-Block neben `Left`/`Top`/`AllRgbDevices`/`ShowDot`. Ohne
 diesen Block (oder ganz ohne `config.json`) verhält sich alles exakt wie mit
 den eingebauten Standardwerten, die unten als Beispiel stehen.
 
-**Overlay-Punkt abschalten:** `"ShowDot": false` in der `config.json` blendet
-den Bildschirmpunkt dauerhaft aus — die Engine (Statusdatei, RGB-Geräte,
-Überwachung) läuft unsichtbar weiter. Gilt ab dem nächsten Overlay-Start
-(neue Claude-Session). Beenden geht dann mangels Rechtsklick-Ziel nur über
-den `Stop-Process`-Einzeiler aus dem Bedienungs-Abschnitt. Das Verschieben
-des Punkts überschreibt die übrigen Config-Schlüssel nicht (Merge-Save).
+**Overlay-Punkt (standardmäßig AUS):** Die RGB-Geräte sind die primäre
+Anzeige. Wer zusätzlich einen kleinen Statuspunkt auf dem Desktop möchte,
+setzt `"ShowDot": true` in der `config.json` — er erscheint dann bei
+Aktivität oben rechts (verschiebbar, Rechtsklick beendet das Overlay).
+Gilt ab dem nächsten Overlay-Start (neue Claude-Session). Ohne sichtbaren
+Punkt beendet man das Overlay über den `Stop-Process`-Einzeiler aus dem
+Bedienungs-Abschnitt. Das Verschieben des Punkts überschreibt die übrigen
+Config-Schlüssel nicht (Merge-Save).
 
 ```json
 {
