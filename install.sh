@@ -119,6 +119,7 @@ if [ -f "$CSC" ]; then
 
   cp "$SRC/SignalAnimator.cs" "$WIN_DIR/"
   if ( cd /mnt/c && "$CSC" /nologo /target:winexe \
+         /r:System.Web.Extensions.dll \
          /out:"$(wslpath -w "$WIN_DIR/SignalAnimator.exe")" \
          "$(wslpath -w "$WIN_DIR/SignalAnimator.cs")" ); then
     echo "Animator kompiliert: $WIN_DIR/SignalAnimator.exe"

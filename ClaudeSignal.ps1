@@ -47,6 +47,16 @@ try {
             [System.Windows.Media.ColorConverter]::ConvertFromString($hex))
     }
 
+    # v6: Farbwert aus config.json validieren/normalisieren — akzeptiert
+    # "#RRGGBB" und "RRGGBB", liefert $null bei ungültigem Wert (Aufrufer
+    # behält dann den bisherigen $colorMap-Standard).
+    function ConvertTo-SignalHex([string]$value) {
+        if ([string]::IsNullOrWhiteSpace($value)) { return $null }
+        $t = $value.Trim().TrimStart('#')
+        if ($t -notmatch '^[0-9A-Fa-f]{6}$') { return $null }
+        return '#' + $t
+    }
+
     # Server + Animator sicherstellen — läuft im Tick (siehe unten), nicht nur
     # einmal beim Start, damit beide auch neu starten, wenn sie über Nacht
     # sterben (SignalAnimator.exe beendet sich zudem bewusst nach 10 Minuten
@@ -121,6 +131,24 @@ try {
             }
             if ($cfg.AllRgbDevices -eq $true) {
                 $script:allRgb = $true
+            }
+            # v6: Punktfarben folgen config.json (States-Block), sofern gültig —
+            # nur beim Start gelesen (Animator liest denselben Block laufend neu,
+            # der Punkt erst nach einem Neustart des Overlays). Ungültige/
+            # fehlende Einträge lassen den jeweiligen $colorMap-Standard stehen.
+            if ($cfg.States) {
+                $stateKeyMap = @{ working = 'red'; waiting = 'yellow'; waitingbusy = 'yellowbusy'; done = 'green'; idle = 'gray' }
+                foreach ($configKey in $stateKeyMap.Keys) {
+                    $entry = $cfg.States.$configKey
+                    if ($null -eq $entry) { continue }
+                    $hex = $null
+                    if ($entry.effect -eq 'solid' -and $entry.color) {
+                        $hex = ConvertTo-SignalHex $entry.color
+                    } elseif ($entry.to) {
+                        $hex = ConvertTo-SignalHex $entry.to
+                    }
+                    if ($hex) { $colorMap[$stateKeyMap[$configKey]] = $hex }
+                }
             }
         } catch { }
     }

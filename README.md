@@ -71,16 +71,15 @@ mitanimieren zu lassen (Lüfter, AIO-Kühler, RAM-Module, …), lege eine
 `config.json` im Deploy-Ordner an
 (`<LOCALAPPDATA>\ClaudeSignal\config.json`, Inhalt `{"AllRgbDevices": true}`)
 — beim nächsten Verschieben des Punkts schreibt das Overlay diese Einstellung
-zusammen mit der Position automatisch fort. **Wichtig:** Der Animator liest
-`config.json` nur einmal beim eigenen Start — nach dem Anlegen/Ändern der
-Datei einmal `Stop-Process -Name SignalAnimator` ausführen, damit er mit der
-neuen Einstellung neu startet (die Tick-Überwachung im Overlay holt ihn
-danach automatisch zurück). Hinweis: Mainboard-/RAM-RGB über OpenRGB braucht
-meist zusätzlich den PawnIO-Treiber und einmalig Admin-Rechte bei der
-Ersteinrichtung; USB-Lüfter-Hubs in der Regel nicht. Je mehr Geräte
-gleichzeitig animiert werden, desto niedriger die Bildrate pro Gerät (die
-Gesamtrate ist gedeckelt, siehe Architektur unten) — bei sehr vielen Geräten
-wirkt das Bild dadurch spürbar ruckeliger.
+zusammen mit der Position automatisch fort. Der Animator liest Änderungen an
+`config.json` automatisch binnen ~5 s neu ein (kein manueller Neustart nötig,
+siehe „Farben & Effekte anpassen" unten) und fragt bei einer Änderung von
+`AllRgbDevices` automatisch die Geräteliste neu ab. Hinweis: Mainboard-/
+RAM-RGB über OpenRGB braucht meist zusätzlich den PawnIO-Treiber und
+einmalig Admin-Rechte bei der Ersteinrichtung; USB-Lüfter-Hubs in der Regel
+nicht. Je mehr Geräte gleichzeitig animiert werden, desto niedriger die
+Bildrate pro Gerät (die Gesamtrate ist gedeckelt, siehe Architektur unten) —
+bei sehr vielen Geräten wirkt das Bild dadurch spürbar ruckeliger.
 
 **SignalRGB: nicht mehr benötigt.** Frühere Versionen nutzten SignalRGB samt
 Deep-Links bzw. einem selbst-pollenden Effekt — beides erwies sich als
@@ -90,6 +89,63 @@ Der Autostart-Dienst kann auf „Manuell" gestellt werden, optional lässt sich
 SignalRGB komplett deinstallieren (`winget uninstall WhirlwindFX.SignalRgb`).
 **Wichtig:** SignalRGB darf **niemals** parallel zu OpenRGB laufen — beide
 kämpfen um dieselbe Gerätekontrolle.
+
+## Farben & Effekte anpassen
+
+Alle fünf Zustände lassen sich in `config.json`
+(`<LOCALAPPDATA>\ClaudeSignal\config.json`) einzeln umgestalten — ein
+optionaler `States`-Block neben `Left`/`Top`/`AllRgbDevices`. Ohne diesen
+Block (oder ganz ohne `config.json`) verhält sich alles exakt wie mit den
+eingebauten Standardwerten, die unten als Beispiel stehen:
+
+```json
+{
+  "States": {
+    "working":     { "effect": "wave",  "from": "#061C6E", "to": "#2878FF", "period_ms": 1400, "breath": true },
+    "waiting":     { "effect": "pulse", "from": "#3C0000", "to": "#FF0000", "period_ms": 800 },
+    "waitingbusy": { "effect": "pulse", "from": "#3C0000", "to": "#FF0000", "period_ms": 400 },
+    "done":        { "effect": "solid", "color": "#00B000" },
+    "idle":        { "effect": "solid", "color": "#1050E0" }
+  }
+}
+```
+
+**Zustände:** `working` = arbeitet, `waiting` = wartet auf dich,
+`waitingbusy` = wartet + Hintergrund arbeitet noch, `done` = fertig,
+`idle` = keine Session.
+
+**Effekte:**
+
+| Effekt | Pflichtfelder | Optional | Wirkung |
+|---|---|---|---|
+| `solid` | `color` | — | konstante Farbe |
+| `pulse` | `from`, `to` | `period_ms` (Standard 1000) | alle LEDs gleichzeitig, sinusförmig zwischen `from` und `to`, `period_ms` = volle Zyklusdauer |
+| `wave` | `from`, `to` | `period_ms` (Standard 1000), `breath` (Standard `false`) | Lauflicht über die LEDs von `from`- nach `to`-Farbe, `period_ms` = Zeit für einen vollen Durchlauf; `breath: true` legt zusätzlich ein sanftes Ein-/Ausatmen (~1,8 s) über die Helligkeit |
+
+Farben als `"#RRGGBB"` oder `"RRGGBB"` (beide Schreibweisen gehen).
+`period_ms` zwischen 50 und 60000.
+
+**Hinweis zu Farbtönen:** Auf dieser Art LEDs wirken helle Mischtöne aus Rot
+mit etwas Grün/Blau-Anteil leicht pink statt rein rot. Für kräftige Warn-/
+Alarmfarben lieber reines Rot (`#FF0000`) oder reines Blau/Grün als
+Zielfarbe (`to`/`color`) verwenden statt gemischter Töne.
+
+**Ungültige Einzeleinträge sind unkritisch:** Fehlt ein Pflichtfeld, ist eine
+Farbe kein gültiges Hex oder `effect` unbekannt, fällt **nur dieser eine
+Zustand** auf seinen eingebauten Standard zurück (siehe Tabelle oben) — der
+Rest der Konfiguration bleibt wirksam. `animator.log` protokolliert das
+(„Konfiguration: Zustand '…' ungültig -- Standard verwendet"). Eine komplett
+kaputte oder fehlende `config.json` bedeutet einfach: alles auf Standard.
+
+**Wann Änderungen wirken:**
+- **Tastatur/Geräte:** `SignalAnimator.exe` liest `config.json` automatisch
+  alle ~5 s neu ein (Live-Reload, kein Neustart nötig) — `animator.log`
+  zeigt „Konfiguration neu geladen".
+- **Bildschirm-Punkt:** liest `config.json` nur beim eigenen Start (für die
+  reine Zielfarbe, ohne Animation). Nach einer Änderung übernimmt der Punkt
+  die neue Farbe erst nach einem Neustart des Overlays (siehe „Overlay
+  verschwunden" unter Troubleshooting für den manuellen Start-Befehl, oder
+  einfach eine neue Claude-Session öffnen).
 
 ## Architektur
 
@@ -262,11 +318,14 @@ unabhängig weiter.
   cd /mnt/c && powershell.exe -NoProfile -Command 'Get-CimInstance Win32_Process | Where-Object { $_.Name -eq "powershell.exe" -and $_.ProcessId -ne $PID -and $_.CommandLine -like "*-File*ClaudeSignal.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }'
   ```
   (oder du lässt ihn einfach laufen — er startet ohnehin automatisch mit).
-- **Animationen anpassen:** `SignalAnimator.cs` enthält die Farb-/Wellen-
-  Mathematik pro Zustand (Funktion `BuildFrame`) — editieren, dann
-  `bash ~/.claude/claude-signal/install.sh` erneut ausführen (kompiliert neu).
-  Läuft bereits eine ältere Animator-Version, meldet `install.sh` das und du
-  startest sie einmal manuell neu (`Stop-Process -Name SignalAnimator`).
+- **Farben/Effekte anpassen:** normalerweise per `config.json`, siehe
+  „Farben & Effekte anpassen" oben (kein Neukompilieren nötig). Wer die
+  Effekt-Mathematik selbst erweitern will (neue Effekttypen o. Ä.):
+  `SignalAnimator.cs` (Funktion `BuildFrame`) editieren, dann
+  `bash ~/.claude/claude-signal/install.sh` erneut ausführen (kompiliert
+  neu). Läuft bereits eine ältere Animator-Version, meldet `install.sh` das
+  und du startest sie einmal manuell neu (`Stop-Process -Name
+  SignalAnimator`).
 
 ## Troubleshooting
 

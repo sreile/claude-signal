@@ -23,14 +23,23 @@
 //   (Controller * FPS <= 40), damit auch der Animations-Fall (rot/gelb) bei
 //   AllRgbDevices mit vielen Geraeten nicht zu viele Verbindungen/Sekunde
 //   erzeugt.
+//
+// v6 (siehe Update 12 im Spec-Dokument): Farben/Effekte pro Zustand sind ueber
+// config.json konfigurierbar (Block "States"). Jedes Feld ist optional und wird
+// einzeln validiert -- ein ungueltiger Zustand faellt NUR fuer sich selbst auf
+// den eingebauten Standard zurueck (der exakt dem bisherigen festverdrahteten
+// Verhalten entspricht), der Rest der Konfiguration bleibt wirksam. Aenderungen
+// an config.json werden alle ~5 s automatisch neu eingelesen (Live-Reload).
 
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Web.Script.Serialization;
 
 class SignalAnimator
 {
@@ -49,10 +58,11 @@ class SignalAnimator
     const int MaxReplySize = 4 * 1024 * 1024; // I9: Wire-Laengen deckeln
     const int StaleMs = 10000;
     const int SocketTimeoutMs = 2000;
-    const int KeepaliveMs = 1000;             // C1b: unveraenderte Frames trotzdem 1x/s senden
-    const int IdleExitMs = 600000;             // I6: 10 Minuten durchgehend grau -> beenden
-    const int HeartbeatMs = 30000;             // I4: Herzschlag nur alle ~30 s
-    const int MaxLogLines = 200;               // I4: Log-Datei bleibt begrenzt
+    const int KeepaliveMs = 1000;               // C1b: unveraenderte Frames trotzdem 1x/s senden
+    const int IdleExitMs = 600000;               // I6: 10 Minuten durchgehend grau -> beenden
+    const int HeartbeatMs = 30000;               // I4: Herzschlag nur alle ~30 s
+    const int MaxLogLines = 200;                 // I4: Log-Datei bleibt begrenzt
+    const int ConfigCheckMs = 5000;              // v6: Live-Reload-Intervall
 
     static Mutex mutex;
     static string baseDir;
@@ -71,6 +81,10 @@ class SignalAnimator
     static int frameIntervalMs = 50;   // C1c: dynamisch an Controller-Zahl gekoppelt
     static Stopwatch clock;            // M4: monotone Animations-Uhr
 
+    static long lastConfigCheckMs = 0;             // v6: Live-Reload
+    static DateTime configLastWrite = DateTime.MinValue;
+    static bool forceReconnect = false;            // v6: AllRgbDevices geaendert -> Geraete neu abfragen
+
     class ControllerInfo
     {
         public int Index;
@@ -79,7 +93,19 @@ class SignalAnimator
         public long LastSentMs;
     }
 
+    // v6: Aufgeloeste Zustands-Konfiguration -- pro internem Zustand einmal beim
+    // (Neu-)Laden berechnet, nicht bei jedem Frame neu geparst.
+    class StateConfig
+    {
+        public string Effect;    // "solid" | "pulse" | "wave"
+        public byte FromR, FromG, FromB;
+        public byte ToR, ToG, ToB;
+        public int PeriodMs;
+        public bool Breath;
+    }
+
     static List<ControllerInfo> controllers = new List<ControllerInfo>();
+    static Dictionary<string, StateConfig> stateConfigs = new Dictionary<string, StateConfig>();
 
     static int Main()
     {
@@ -129,6 +155,8 @@ class SignalAnimator
         Log("SignalAnimator gestartet");
 
         ReadConfig();
+        try { configLastWrite = File.Exists(configFile) ? File.GetLastWriteTimeUtc(configFile) : DateTime.MinValue; }
+        catch { configLastWrite = DateTime.MinValue; }
         Log("Konfiguration: AllRgbDevices=" + allRgbDevices);
 
         clock = Stopwatch.StartNew();
@@ -136,6 +164,17 @@ class SignalAnimator
 
         while (true)
         {
+            if (NowMs() - lastConfigCheckMs >= ConfigCheckMs)
+            {
+                lastConfigCheckMs = NowMs();
+                CheckConfigReload();
+                if (forceReconnect)
+                {
+                    forceReconnect = false;
+                    haveControllers = false; // v6: AllRgbDevices geaendert -> Geraete neu abfragen
+                }
+            }
+
             if (!haveControllers)
             {
                 haveControllers = RefreshControllers();
@@ -298,24 +337,232 @@ class SignalAnimator
     }
 
     // ---------------------------------------------------------------
-    // config.json: nur "AllRgbDevices": true interessiert -- naiver
-    // String-Check reicht, die Datei ist maschinengeneriert. Wird nur
-    // beim Start gelesen -- nach einer Config-Aenderung den Animator
-    // einmal neu starten (Stop-Process -Name SignalAnimator).
+    // v6: Live-Reload -- alle ~5 s prueft die Hauptschleife, ob sich
+    // config.json seit dem letzten Einlesen geaendert hat.
     // ---------------------------------------------------------------
+    static void CheckConfigReload()
+    {
+        try
+        {
+            DateTime lw = File.Exists(configFile) ? File.GetLastWriteTimeUtc(configFile) : DateTime.MinValue;
+            if (lw == configLastWrite) { return; }
+            configLastWrite = lw;
+            bool wasAllRgb = allRgbDevices;
+            ReadConfig();
+            Log("Konfiguration neu geladen");
+            if (allRgbDevices != wasAllRgb) { forceReconnect = true; }
+        }
+        catch { }
+    }
+
+    // ---------------------------------------------------------------
+    // config.json: AllRgbDevices (bool) + optionaler "States"-Block mit
+    // Farben/Effekten pro Zustand. Jedes Feld ist einzeln optional/defensiv:
+    // ein ungueltiger Zustand faellt NUR fuer sich selbst auf den
+    // eingebauten Standard zurueck (siehe DefaultFor). Komplett fehlende
+    // oder unlesbare Datei -> alle Standardwerte, kein Fehler.
+    // ---------------------------------------------------------------
+    static readonly string[] StateKeys = new string[] { "working", "waiting", "waitingbusy", "done", "idle" };
+
     static void ReadConfig()
     {
+        allRgbDevices = false;
+        stateConfigs = new Dictionary<string, StateConfig>();
+        for (int i = 0; i < StateKeys.Length; i++) { stateConfigs[StateKeys[i]] = DefaultFor(StateKeys[i]); }
+
         try
         {
             if (!File.Exists(configFile)) { return; }
             string content = File.ReadAllText(configFile);
-            string compact = content.Replace(" ", "").Replace("\r", "").Replace("\n", "").Replace("\t", "");
-            allRgbDevices = compact.IndexOf("\"AllRgbDevices\":true", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (content.Trim().Length == 0) { return; }
+
+            JavaScriptSerializer js = new JavaScriptSerializer();
+            object parsed = js.DeserializeObject(content);
+            Dictionary<string, object> root = parsed as Dictionary<string, object>;
+            if (root == null) { return; }
+
+            object allRgbObj;
+            if (root.TryGetValue("AllRgbDevices", out allRgbObj) && allRgbObj is bool)
+            {
+                allRgbDevices = (bool)allRgbObj;
+            }
+
+            object statesObj;
+            if (root.TryGetValue("States", out statesObj))
+            {
+                Dictionary<string, object> states = statesObj as Dictionary<string, object>;
+                if (states != null)
+                {
+                    for (int i = 0; i < StateKeys.Length; i++)
+                    {
+                        string key = StateKeys[i];
+                        object entryObj;
+                        if (!states.TryGetValue(key, out entryObj)) { continue; }
+                        Dictionary<string, object> entry = entryObj as Dictionary<string, object>;
+                        if (entry == null)
+                        {
+                            Log("Konfiguration: Zustand '" + key + "' ungueltig -- Standard verwendet");
+                            continue;
+                        }
+                        StateConfig parsedCfg;
+                        if (TryParseStateConfig(entry, out parsedCfg))
+                        {
+                            stateConfigs[key] = parsedCfg;
+                        }
+                        else
+                        {
+                            Log("Konfiguration: Zustand '" + key + "' ungueltig -- Standard verwendet");
+                        }
+                    }
+                }
+            }
         }
         catch (Exception ex)
         {
-            Log("config.json nicht lesbar: " + ex.Message);
+            Log("config.json nicht lesbar/ungueltig: " + ex.Message + " -- Standardwerte verwendet");
+            stateConfigs = new Dictionary<string, StateConfig>();
+            for (int i = 0; i < StateKeys.Length; i++) { stateConfigs[StateKeys[i]] = DefaultFor(StateKeys[i]); }
         }
+    }
+
+    // Eingebaute Standardwerte -- entsprechen exakt dem Verhalten vor v6.
+    static StateConfig DefaultFor(string key)
+    {
+        StateConfig c = new StateConfig();
+        if (key == "working")
+        {
+            c.Effect = "wave";
+            c.FromR = 0x06; c.FromG = 0x1C; c.FromB = 0x6E;
+            c.ToR = 0x28; c.ToG = 0x78; c.ToB = 0xFF;
+            c.PeriodMs = 1400;
+            c.Breath = true;
+        }
+        else if (key == "waiting")
+        {
+            c.Effect = "pulse";
+            c.FromR = 0x3C; c.FromG = 0x00; c.FromB = 0x00;
+            c.ToR = 0xFF; c.ToG = 0x00; c.ToB = 0x00;
+            c.PeriodMs = 800;
+            c.Breath = false;
+        }
+        else if (key == "waitingbusy")
+        {
+            c.Effect = "pulse";
+            c.FromR = 0x3C; c.FromG = 0x00; c.FromB = 0x00;
+            c.ToR = 0xFF; c.ToG = 0x00; c.ToB = 0x00;
+            c.PeriodMs = 400;
+            c.Breath = false;
+        }
+        else if (key == "done")
+        {
+            c.Effect = "solid";
+            c.ToR = 0x00; c.ToG = 0xB0; c.ToB = 0x00;
+            c.FromR = c.ToR; c.FromG = c.ToG; c.FromB = c.ToB;
+            c.PeriodMs = 1000;
+            c.Breath = false;
+        }
+        else // "idle" (und jeder unbekannte/verfallene Zustand)
+        {
+            c.Effect = "solid";
+            c.ToR = 0x10; c.ToG = 0x50; c.ToB = 0xE0;
+            c.FromR = c.ToR; c.FromG = c.ToG; c.FromB = c.ToB;
+            c.PeriodMs = 1000;
+            c.Breath = false;
+        }
+        return c;
+    }
+
+    static string ConfigKeyForInternalState(string internalState)
+    {
+        if (internalState == "red") { return "working"; }
+        if (internalState == "yellow") { return "waiting"; }
+        if (internalState == "yellowbusy") { return "waitingbusy"; }
+        if (internalState == "green") { return "done"; }
+        return "idle"; // "gray" oder unbekannt/stale
+    }
+
+    static bool TryParseStateConfig(Dictionary<string, object> entry, out StateConfig cfg)
+    {
+        cfg = null;
+        object effectObj;
+        if (!entry.TryGetValue("effect", out effectObj)) { return false; }
+        string effect = effectObj as string;
+        if (effect == null) { return false; }
+        effect = effect.Trim().ToLowerInvariant();
+        if (effect != "solid" && effect != "pulse" && effect != "wave") { return false; }
+
+        StateConfig c = new StateConfig();
+        c.Effect = effect;
+
+        if (effect == "solid")
+        {
+            object colorObj;
+            byte r, g, b;
+            if (!entry.TryGetValue("color", out colorObj)) { return false; }
+            string colorStr = colorObj as string;
+            if (colorStr == null || !TryParseHexColor(colorStr, out r, out g, out b)) { return false; }
+            c.ToR = r; c.ToG = g; c.ToB = b;
+            c.FromR = r; c.FromG = g; c.FromB = b;
+            c.PeriodMs = 1000;
+            c.Breath = false;
+            cfg = c;
+            return true;
+        }
+
+        // pulse/wave: from, to (Pflicht), period_ms + breath (optional)
+        object fromObj, toObj, periodObj, breathObj;
+        byte fr, fg, fb, tr, tg, tb;
+        if (!entry.TryGetValue("from", out fromObj)) { return false; }
+        if (!entry.TryGetValue("to", out toObj)) { return false; }
+        string fromStr = fromObj as string;
+        string toStr = toObj as string;
+        if (fromStr == null || toStr == null) { return false; }
+        if (!TryParseHexColor(fromStr, out fr, out fg, out fb)) { return false; }
+        if (!TryParseHexColor(toStr, out tr, out tg, out tb)) { return false; }
+
+        int periodMs = 1000;
+        if (entry.TryGetValue("period_ms", out periodObj))
+        {
+            if (!TryToInt(periodObj, out periodMs)) { return false; }
+        }
+        if (periodMs < 50 || periodMs > 60000) { return false; } // Plausibilitaetsgrenzen
+
+        bool breath = false;
+        if (entry.TryGetValue("breath", out breathObj) && breathObj is bool) { breath = (bool)breathObj; }
+
+        c.FromR = fr; c.FromG = fg; c.FromB = fb;
+        c.ToR = tr; c.ToG = tg; c.ToB = tb;
+        c.PeriodMs = periodMs;
+        c.Breath = breath;
+        cfg = c;
+        return true;
+    }
+
+    // Akzeptiert "#RRGGBB" und "RRGGBB".
+    static bool TryParseHexColor(string s, out byte r, out byte g, out byte b)
+    {
+        r = 0; g = 0; b = 0;
+        if (s == null) { return false; }
+        s = s.Trim();
+        if (s.Length > 0 && s[0] == '#') { s = s.Substring(1); }
+        if (s.Length != 6) { return false; }
+        int rv, gv, bv;
+        if (!int.TryParse(s.Substring(0, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out rv)) { return false; }
+        if (!int.TryParse(s.Substring(2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out gv)) { return false; }
+        if (!int.TryParse(s.Substring(4, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out bv)) { return false; }
+        r = (byte)rv; g = (byte)gv; b = (byte)bv;
+        return true;
+    }
+
+    static bool TryToInt(object o, out int result)
+    {
+        result = 0;
+        if (o is int) { result = (int)o; return true; }
+        if (o is double) { result = (int)(double)o; return true; }
+        if (o is long) { result = (int)(long)o; return true; }
+        string s = o as string;
+        if (s != null) { return int.TryParse(s, out result); }
+        return false;
     }
 
     // ---------------------------------------------------------------
@@ -630,50 +877,43 @@ class SignalAnimator
 
     // ---------------------------------------------------------------
     // Animationen: liefert fuer n LEDs ein Byte-Array (R,G,B,0 je LED).
+    // Zustands-Farben/Effekte kommen aus stateConfigs (v6, config.json)
+    // -- ohne Konfiguration entsprechen sie exakt dem alten festverdrahteten
+    // Verhalten (siehe DefaultFor oben).
     // ---------------------------------------------------------------
     static byte[] BuildFrame(string state, long t, int n)
     {
         byte[] result = new byte[Math.Max(0, n) * 4];
         if (n <= 0) { return result; }
 
-        if (state == "green")
+        string key = ConfigKeyForInternalState(state);
+        StateConfig cfg;
+        if (!stateConfigs.TryGetValue(key, out cfg) || cfg == null) { cfg = DefaultFor(key); }
+
+        if (cfg.Effect == "pulse")
         {
-            FillSolid(result, n, 0x00, 0xB0, 0x00);
+            double k = 0.5 + 0.5 * Math.Sin(t * 2.0 * Math.PI / cfg.PeriodMs);
+            byte r, g, b;
+            LerpColor(cfg.FromR, cfg.FromG, cfg.FromB, cfg.ToR, cfg.ToG, cfg.ToB, k, out r, out g, out b);
+            FillSolid(result, n, r, g, b);
         }
-        else if (state == "red")
+        else if (cfg.Effect == "wave")
         {
-            double phase = (t / 1400.0) % 1.0;
-            double breath = 0.75 + 0.25 * Math.Sin(t / 900.0);
+            double phase = (t / (double)cfg.PeriodMs) % 1.0;
+            double breath = cfg.Breath ? (0.75 + 0.25 * Math.Sin(t / 900.0)) : 1.0;
             for (int i = 0; i < n; i++)
             {
                 double p = (double)i / n;
                 double d = WrappedDistance(p, phase);
                 double intensity = FalloffIntensity(d, 0.35) * breath;
                 byte r, g, b;
-                LerpColor(0x06, 0x1C, 0x6E, 0x28, 0x78, 0xFF, intensity, out r, out g, out b);
+                LerpColor(cfg.FromR, cfg.FromG, cfg.FromB, cfg.ToR, cfg.ToG, cfg.ToB, intensity, out r, out g, out b);
                 SetLed(result, i, r, g, b);
             }
         }
-        else if (state == "yellow")
+        else // "solid" (auch Fallback bei unbekanntem Effect-Wert, sollte durch Validierung nie vorkommen)
         {
-            double k = 0.5 + 0.5 * Math.Sin(t / 127.0);
-            byte r, g, b;
-            // Spitze ist reines Rot (keine G/B-Anteile) — helle Mischtoene wirken auf LEDs pink
-            LerpColor(0x3C, 0x00, 0x00, 0xFF, 0x00, 0x00, k, out r, out g, out b);
-            FillSolid(result, n, r, g, b);
-        }
-        else if (state == "yellowbusy")
-        {
-            // Alarm = alle Tasten gleichzeitig (Welle ist fuer "arbeitet" reserviert);
-            // schnelleres Tempo unterscheidet "wartet + Hintergrund aktiv" vom reinen Warten
-            double k = 0.5 + 0.5 * Math.Sin(t / 64.0);   // hektischer Puls ~0,4 s
-            byte r, g, b;
-            LerpColor(0x3C, 0x00, 0x00, 0xFF, 0x00, 0x00, k, out r, out g, out b);
-            FillSolid(result, n, r, g, b);
-        }
-        else // "gray" oder unbekannt/stale
-        {
-            FillSolid(result, n, 0x10, 0x50, 0xE0);
+            FillSolid(result, n, cfg.ToR, cfg.ToG, cfg.ToB);
         }
 
         return result;

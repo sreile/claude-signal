@@ -394,3 +394,52 @@ Testrunde ohne Isolation zeigte genau dieses Race, kein Fehler im
 Animator). 10-Minuten-Leerlaufende mit einer temporären 30-s-Konstante
 verifiziert (Log: „Leerlauf-Ende … -- beende mich", Prozess anschließend
 beendet); der Commit selbst verwendet die reguläre 10-Minuten-Konstante.
+
+**Update 12 (2026-09-02):** v6 — Farben/Effekte pro Zustand über
+`config.json` konfigurierbar (Block `States` neben `Left`/`Top`/
+`AllRgbDevices`), mit sicheren Fallbacks auf die bisherigen fest
+verdrahteten Werte. Schema pro Zustand (`working`/`waiting`/`waitingbusy`/
+`done`/`idle`, Abbildung auf die internen Zustände red/yellow/yellowbusy/
+green/gray): `effect` (`solid`/`pulse`/`wave`), `color` (nur `solid`),
+`from`/`to` (nur `pulse`/`wave`), optional `period_ms` und (nur `wave`)
+`breath`. Die Standardwerte entsprechen exakt dem Verhalten vor v6 (inkl.
+der Herleitung `divisor = period_ms/(2π)` aus den bisherigen
+`sin(t/127)`/`sin(t/64)`-Konstanten für `waiting`/`waitingbusy` → 800/400 ms).
+
+*SignalAnimator.cs:* echtes JSON-Parsing über `JavaScriptSerializer`
+(`System.Web.Extensions`, GAC-Bestandteil jeder .NET-4.x-Installation —
+`install.sh` ergänzt `/r:System.Web.Extensions.dll` beim Kompilieren) statt
+des bisherigen naiven String-Checks. Jeder Zustand wird einzeln validiert
+(Pflichtfelder, Hex-Format `#RRGGBB`/`RRGGBB`, `period_ms` zwischen 50 und
+60000, `effect` bekannt) — ein ungültiger Zustand fällt NUR für sich selbst
+auf den eingebauten Standard zurück und wird geloggt
+(„Konfiguration: Zustand '…' ungültig -- Standard verwendet"), der Rest der
+Konfiguration bleibt wirksam; eine komplett unlesbare/kaputte `config.json`
+bedeutet: alle Zustände auf Standard. Die Renderer wurden generalisiert
+(`BuildFrame` liest ein aufgelöstes `StateConfig` pro Zustand statt fest
+verdrahteter Werte); `pulse` nutzt `k = 0,5 + 0,5·sin(t·2π/period_ms)`,
+`wave` die bestehende Lauflicht-/Falloff-Mathematik mit `from`/`to`/
+`period_ms`, `breath` optional als Multiplikator. Live-Reload: die
+Hauptschleife prüft alle ~5 s `File.GetLastWriteTimeUtc(config.json)`; bei
+Änderung wird neu geparst und geloggt („Konfiguration neu geladen"); ändert
+sich dabei `AllRgbDevices`, wird zusätzlich eine volle Geräte-Neuabfrage
+ausgelöst (`RefreshControllers`).
+
+*ClaudeSignal.ps1:* Der Bildschirm-Punkt übernimmt beim Start (nicht
+live) `to`/`color` aus `config.json` als Zielfarbe für `$colorMap`, sofern
+gültig (`ConvertTo-SignalHex`, akzeptiert `#RRGGBB`/`RRGGBB`) — ungültige/
+fehlende Einträge lassen den bisherigen Standard stehen. Die
+Puls-Zeittakte des Punkts selbst bleiben absichtlich fest verdrahtet
+(nur der Animator bekommt echte Perioden-/Effekt-Konfiguration).
+
+*Live-Verifikation:* `csc /warn:4 /warnaserror /langversion:5
+/r:System.Web.Extensions.dll` auf einer Kopie kompiliert warnungsfrei.
+Isoliert vom produktiven Overlay getestet (siehe Update 11 zur Race-
+Problematik): ohne `States`-Block verhält sich der Animator identisch zu
+vorher (Log zeigt Standardwerte); mit einer benutzerdefinierten
+`config.json` (u. a. `done` als `solid #8000FF`, `waiting` als `pulse` mit
+`period_ms: 300`) übernimmt der Animator die Werte sichtbar (Log bestätigt
+Annahme); absichtlich kaputte Einzeleinträge (ungültiges Hex, unbekannter
+`effect`-Wert) lösen den Pro-Zustand-Fallback aus, ohne den Prozess zu
+gefährden; eine Änderung an `config.json` während des Laufs wird binnen
+~5 s übernommen („Konfiguration neu geladen" im Log).
