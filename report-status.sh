@@ -67,6 +67,13 @@ main() {
         printf '%s\n' "$(date +%F' '%T) $message" >> "$win_dir/notifications.log"
         tail -n 50 "$win_dir/notifications.log" > "$win_dir/notifications.log.tmp" \
           && mv "$win_dir/notifications.log.tmp" "$win_dir/notifications.log"
+        # Leerlauf-Meldung ("Claude is waiting for your input"): heisst nur
+        # "Prompt ist frei", NICHT "Claude fragt dich etwas" — feuert ~60 s nach
+        # jedem Zug-Ende und wuerde fertige Sessions faelschlich rot faerben
+        # (live beobachtet 2026-09-02). Kein Statuswechsel dafuer.
+        if printf '%s' "$message" | grep -qiE 'waiting for your input|awaiting your input'; then
+          return 0
+        fi
       fi
       printf '%s %s\n' "$new_status" "$(date +%s)" > "$sessions_dir/$session_id.status"
       ;;

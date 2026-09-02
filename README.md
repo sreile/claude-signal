@@ -112,6 +112,12 @@ Kleinschreibung) einen Ausdruck wie „usage limit", „session limit",
 <Uhrzeit>", wird daraus **statt** „wartet auf dich" der eigene Zustand
 „limitiert" (langsame gelbe Welle, siehe Tabelle oben).
 
+Die Leerlauf-Meldung „Claude is waiting for your input" (feuert ~60 s nach
+jedem Zug-Ende, solange der Prompt unbenutzt ist) wird dagegen komplett
+**ignoriert** — sie heißt nur „Eingabefeld frei", nicht „Claude fragt dich
+etwas", und würde sonst jede fertige Session nach einer Minute fälschlich
+rot färben (live beobachtet und behoben am 2026-09-02).
+
 **Ehrlicher Stand:** Ob und mit welchem genauen Text Claude Code bei einem
 Limit tatsächlich ein `Notification`-Ereignis feuert, ist zum Zeitpunkt
 dieses Commits noch nicht am echten Ereignis verifiziert — das Muster basiert

@@ -113,6 +113,16 @@ run waiting "$JSON"
 line=$(cat "$TMP/sessions/abc-123.status" 2>/dev/null || echo FEHLT)
 check "ohne message-Feld: waiting" "waiting" "${line%% *}"
 
+# 16b) Leerlauf-Meldung wird IGNORIERT: Status bleibt unverändert (v6.3)
+run done "$JSON"
+run waiting '{"session_id":"abc-123","message":"Claude is waiting for your input"}'
+line=$(cat "$TMP/sessions/abc-123.status" 2>/dev/null || echo FEHLT)
+check "Leerlauf-Meldung: Status bleibt done" "done" "${line%% *}"
+# ... wird aber trotzdem im Log mitgeschnitten
+grep -q 'waiting for your input' "$TMP/notifications.log" 2>/dev/null \
+  && echo "ok - Leerlauf-Meldung: geloggt" \
+  || { echo "FAIL - Leerlauf-Meldung nicht geloggt"; fails=$((fails+1)); }
+
 # 17) notifications.log wird angelegt und bleibt auf 50 Zeilen begrenzt
 rm -f "$TMP/notifications.log"
 for i in $(seq 1 55); do
