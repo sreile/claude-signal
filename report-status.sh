@@ -59,7 +59,12 @@ main() {
         message=$(printf '%s' "$input" \
           | grep -o '"message"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 \
           | sed 's/.*"\([^"]*\)"$/\1/')
-        if printf '%s' "$message" | grep -qiE 'usage limit|session limit|rate.?limit|continuing automatically|limit reached|resets [0-9]'; then
+        # Reset-Meldung ZUERST pruefen (enthaelt ebenfalls "usage limit"!):
+        # "Usage limit reset - Claude is continuing your task" = es geht weiter -> working.
+        # Verifiziert am echten Limit 2026-09-02 (siehe notifications.log-Historie).
+        if printf '%s' "$message" | grep -qiE 'limit reset|continuing your task'; then
+          new_status="working"
+        elif printf '%s' "$message" | grep -qiE 'usage limit|session limit|rate.?limit|continuing automatically|limit reached|resets [0-9]'; then
           new_status="limited"
         fi
         # Rohtext der Notification mitschneiden — hilft, das Muster oben beim

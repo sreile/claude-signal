@@ -118,15 +118,17 @@ jedem Zug-Ende, solange der Prompt unbenutzt ist) wird dagegen komplett
 etwas", und würde sonst jede fertige Session nach einer Minute fälschlich
 rot färben (live beobachtet und behoben am 2026-09-02).
 
-**Ehrlicher Stand:** Ob und mit welchem genauen Text Claude Code bei einem
-Limit tatsächlich ein `Notification`-Ereignis feuert, ist zum Zeitpunkt
-dieses Commits noch nicht am echten Ereignis verifiziert — das Muster basiert
-auf plausiblen Formulierungen. Jede `Notification`-Nachricht wird deshalb
-zusätzlich (unabhängig davon, ob sie als Limit erkannt wurde) nach
-`<LOCALAPPDATA>\ClaudeSignal\notifications.log` mitgeschnitten (auf die
-letzten 50 Zeilen begrenzt) — beim nächsten echten Limit-Ereignis lässt sich
-dort der tatsächliche Text nachschlagen und das Muster in `report-status.sh`
-bei Bedarf nachschärfen.
+**Am echten Limit verifiziert (2026-09-02):** Beim Limit-**Eintritt** feuert
+Claude Code **gar kein** Hook-Ereignis — die Anzeige friert dann zwangsläufig
+auf dem letzten Zustand ein (meist „arbeitet", was inhaltlich passt: der
+Auftrag läuft nach dem Reset automatisch weiter). Die gelbe Limit-Welle kann
+also derzeit nur erscheinen, wenn künftige Claude-Code-Versionen ein
+Eintritts-Ereignis senden — das Erkennungsmuster bleibt dafür aktiv. Beim
+Limit-**Ende** kommt dagegen verlässlich `„Usage limit reset — Claude is
+continuing your task"` — das wird als `working` klassifiziert (es geht ja
+weiter), nicht als Limit. Jede `Notification`-Nachricht wird weiterhin nach
+`<LOCALAPPDATA>\ClaudeSignal\notifications.log` mitgeschnitten (letzte 50
+Zeilen) — dort lassen sich neue Meldungstexte jederzeit nachschlagen.
 
 ## Farben & Effekte anpassen
 

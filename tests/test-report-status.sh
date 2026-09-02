@@ -118,6 +118,11 @@ run done "$JSON"
 run waiting '{"session_id":"abc-123","message":"Claude is waiting for your input"}'
 line=$(cat "$TMP/sessions/abc-123.status" 2>/dev/null || echo FEHLT)
 check "Leerlauf-Meldung: Status bleibt done" "done" "${line%% *}"
+
+# 16c) Reset-Meldung -> working (nicht limited!), verifiziert am echten Limit 2026-09-02
+run waiting '{"session_id":"abc-123","message":"Usage limit reset — Claude is continuing your task"}'
+line=$(cat "$TMP/sessions/abc-123.status" 2>/dev/null || echo FEHLT)
+check "Reset-Meldung: working" "working" "${line%% *}"
 # ... wird aber trotzdem im Log mitgeschnitten
 grep -q 'waiting for your input' "$TMP/notifications.log" 2>/dev/null \
   && echo "ok - Leerlauf-Meldung: geloggt" \
