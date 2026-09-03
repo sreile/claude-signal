@@ -104,7 +104,12 @@ Tastatur exklusiv fest, selbst wenn man die App beendet (die eigene Kette
 läuft dann fehlerfrei ins Leere, nichts leuchtet). Abhilfe: SignalRGB aus dem
 Autostart entfernen UND den Dienst deaktivieren (als Admin:
 `Stop-Service SignalRgb.Service -Force; Set-Service SignalRgb.Service -StartupType Disabled`)
-— oder SignalRGB gleich deinstallieren.
+— oder SignalRGB gleich deinstallieren. **Und wichtig danach:** Lief der
+Blocker, während OpenRGB startete, schreibt OpenRGB auch nach dessen Ende
+weiter auf einen toten Geräte-Handle — einmal `Stop-Process -Name
+OpenRGB,SignalAnimator` ausführen (kein Neustart nötig, die
+Overlay-Überwachung bringt beide binnen ~30 s frisch zurück), dann leuchtet
+es wieder.
 
 ### Session-/Nutzungslimit erkennen
 
