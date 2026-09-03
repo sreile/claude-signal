@@ -123,6 +123,26 @@ check "Leerlauf-Meldung: Status bleibt done" "done" "${line%% *}"
 run waiting '{"session_id":"abc-123","message":"Usage limit reset — Claude is continuing your task"}'
 line=$(cat "$TMP/sessions/abc-123.status" 2>/dev/null || echo FEHLT)
 check "Reset-Meldung: working" "working" "${line%% *}"
+
+# 16d) Stop nach frischem Limit-Abbruch -> 'limited' (v6.5, Transcript-Erkennung)
+TRANS="$TMP/fake-transcript.jsonl"
+NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+printf '{"type":"assistant","isApiErrorMessage":true,"timestamp":"%s","message":{"content":[{"type":"text","text":"You'"'"'ve hit your session limit · resets 7:20pm"}]}}\n' "$NOW_ISO" > "$TRANS"
+run done "{\"session_id\":\"abc-123\",\"transcript_path\":\"$TRANS\"}"
+line=$(cat "$TMP/sessions/abc-123.status" 2>/dev/null || echo FEHLT)
+check "Stop nach Limit-Abbruch: limited" "limited" "${line%% *}"
+
+# 16e) alter Limit-Fehler (>10 min) zaehlt nicht -> done
+printf '{"type":"assistant","isApiErrorMessage":true,"timestamp":"2020-01-01T00:00:00.000Z","message":{"content":[{"type":"text","text":"session limit"}]}}\n' > "$TRANS"
+run done "{\"session_id\":\"abc-123\",\"transcript_path\":\"$TRANS\"}"
+line=$(cat "$TMP/sessions/abc-123.status")
+check "alter Limit-Fehler: done" "done" "${line%% *}"
+
+# 16f) Limit-Text nur als Gespraechsinhalt (ohne isApiErrorMessage-Schluessel) -> done
+printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"text","text":"wir reden nur ueber das session limit und usage limit"}]}}\n' "$NOW_ISO" > "$TRANS"
+run done "{\"session_id\":\"abc-123\",\"transcript_path\":\"$TRANS\"}"
+line=$(cat "$TMP/sessions/abc-123.status")
+check "Limit nur als Text: done" "done" "${line%% *}"
 # ... wird aber trotzdem im Log mitgeschnitten
 grep -q 'waiting for your input' "$TMP/notifications.log" 2>/dev/null \
   && echo "ok - Leerlauf-Meldung: geloggt" \

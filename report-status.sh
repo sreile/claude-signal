@@ -52,6 +52,43 @@ main() {
         current=$(head -c 32 "$sessions_dir/$session_id.status" 2>/dev/null | cut -d' ' -f1)
         case "$current" in waiting|waitingbusy) new_status="waitingbusy" ;; esac
       fi
+      if [ "$status" = "done" ]; then
+        # v6.5: "Fertig" direkt nach einem Limit-Abbruch ist gelogen — der
+        # Limit-Eintritt selbst feuert kein Event, aber der Stop danach schon,
+        # und das Transcript-Ende verrät den frischen Limit-Fehler (struktureller
+        # Schlüssel isApiErrorMessage, KEIN Text-Grep — Gespräche über Limits
+        # lösen so keinen Fehlalarm aus). Verifiziert am echten Limit 2026-09-02.
+        local transcript
+        transcript=$(printf '%s' "$input" \
+          | grep -o '"transcript_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 \
+          | sed 's/.*"\([^"]*\)"$/\1/')
+        if [ -n "$transcript" ] && [ -f "$transcript" ] && command -v python3 >/dev/null 2>&1; then
+          if tail -n 30 "$transcript" 2>/dev/null | python3 -c '
+import sys, json, datetime
+now = datetime.datetime.now(datetime.timezone.utc)
+hit = False
+for line in sys.stdin:
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    if d.get("isApiErrorMessage") is not True:
+        continue
+    try:
+        ts = datetime.datetime.fromisoformat(str(d.get("timestamp","")).replace("Z","+00:00"))
+        if (now - ts).total_seconds() > 600:
+            continue
+    except Exception:
+        continue
+    txt = json.dumps(d.get("message", {}), ensure_ascii=False).lower()
+    if "session limit" in txt or "usage limit" in txt or "rate limit" in txt or "rate_limit" in txt:
+        hit = True
+print("LIMIT" if hit else "OK")
+' 2>/dev/null | grep -q '^LIMIT$'; then
+            new_status="limited"
+          fi
+        fi
+      fi
       if [ "$status" = "waiting" ]; then
         # Notification-Nachricht klassifizieren: Session-/Nutzungslimit-Warten
         # sieht optisch anders aus als "wartet auf Berechtigung/Eingabe" (v6.2).

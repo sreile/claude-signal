@@ -119,11 +119,15 @@ etwas", und würde sonst jede fertige Session nach einer Minute fälschlich
 rot färben (live beobachtet und behoben am 2026-09-02).
 
 **Am echten Limit verifiziert (2026-09-02):** Beim Limit-**Eintritt** feuert
-Claude Code **gar kein** Hook-Ereignis — die Anzeige friert dann zwangsläufig
-auf dem letzten Zustand ein (meist „arbeitet", was inhaltlich passt: der
-Auftrag läuft nach dem Reset automatisch weiter). Die gelbe Limit-Welle kann
-also derzeit nur erscheinen, wenn künftige Claude-Code-Versionen ein
-Eintritts-Ereignis senden — das Erkennungsmuster bleibt dafür aktiv. Beim
+Claude Code kein eigenes Hook-Ereignis. Aber: Der **Stop-Hook des dadurch
+beendeten Zugs** feuert kurz danach — und `report-status.sh` prüft dabei das
+Transcript-Ende auf einen **frischen Limit-Fehler** (strukturell über den
+JSON-Schlüssel `isApiErrorMessage`, nicht per Text-Suche — Gespräche *über*
+Limits lösen keinen Fehlalarm aus; „frisch" = jünger als 10 Minuten). Wird
+einer gefunden, meldet der Stop `limitiert` statt `fertig` — die gesamte
+Wartezeit zeigt dann die gelbe Welle. Endet ein Zug dagegen sauber, bevor das
+Limit zuschlägt (kein frischer Fehler im Transcript), bleibt die letzte
+ehrliche Farbe stehen. Beim
 Limit-**Ende** kommt dagegen verlässlich `„Usage limit reset — Claude is
 continuing your task"` — das wird als `working` klassifiziert (es geht ja
 weiter), nicht als Limit. Jede `Notification`-Nachricht wird weiterhin nach
