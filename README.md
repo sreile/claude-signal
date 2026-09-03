@@ -97,7 +97,14 @@ Datei-/HTTP-Zugriffe komplett). SignalRGB wird jetzt nicht mehr gebraucht:
 Der Autostart-Dienst kann auf „Manuell" gestellt werden, optional lässt sich
 SignalRGB komplett deinstallieren (`winget uninstall WhirlwindFX.SignalRgb`).
 **Wichtig:** SignalRGB darf **niemals** parallel zu OpenRGB laufen — beide
-kämpfen um dieselbe Gerätekontrolle.
+kämpfen um dieselbe Gerätekontrolle. **Achtung, häufige Falle nach einem
+Windows-Neustart:** Steht die SignalRGB-App noch im Autostart, startet sie
+beim Login ihren System-Dienst `SignalRgb.Service` mit — und der hält die
+Tastatur exklusiv fest, selbst wenn man die App beendet (die eigene Kette
+läuft dann fehlerfrei ins Leere, nichts leuchtet). Abhilfe: SignalRGB aus dem
+Autostart entfernen UND den Dienst deaktivieren (als Admin:
+`Stop-Service SignalRgb.Service -Force; Set-Service SignalRgb.Service -StartupType Disabled`)
+— oder SignalRGB gleich deinstallieren.
 
 ### Session-/Nutzungslimit erkennen
 
